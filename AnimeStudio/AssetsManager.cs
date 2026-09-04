@@ -111,6 +111,27 @@ namespace AnimeStudio
             }
         }
 
+        /// <summary>
+        /// Load one logical Unity file from a caller-owned in-memory stream. This avoids
+        /// materializing VFS payloads as temporary files during index construction.
+        /// </summary>
+        public void LoadStream(string logicalPath, Stream stream)
+        {
+            if (stream == null)
+                throw new ArgumentNullException(nameof(stream));
+            if (!stream.CanSeek)
+                throw new ArgumentException("The asset stream must be seekable", nameof(stream));
+
+            var reader = new FileReader(logicalPath, stream);
+            reader = reader.PreProcessing(Game);
+            LoadFile(reader);
+            if (!SkipProcess)
+            {
+                ReadAssets();
+                ProcessAssets();
+            }
+        }
+
         public void LoadFolder(string path)
         {
             if (Silent)

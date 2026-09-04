@@ -72,6 +72,7 @@ namespace AnimeStudio
         public TextureFormat m_TextureFormat;
         public bool m_MipMap;
         public int m_MipCount;
+        public int m_ColorSpace;
         public GLTextureSettings m_TextureSettings;
         public ResourceReader image_data;
         public StreamingInfo m_StreamData;
@@ -164,7 +165,7 @@ namespace AnimeStudio
             }
             if (version[0] > 3 || (version[0] == 3 && version[1] >= 5)) //3.5.0 and up
             {
-                var m_ColorSpace = reader.ReadInt32();
+                m_ColorSpace = reader.ReadInt32();
             }
             if (version[0] > 2020 || (version[0] == 2020 && version[1] >= 2)) //2020.2 and up
             {

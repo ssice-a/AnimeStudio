@@ -5,6 +5,7 @@
         Convert,
         Raw,
         Dump,
-        JSON
+        JSON,
+        Eiem
     }
 }

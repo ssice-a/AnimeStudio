@@ -731,6 +731,12 @@ namespace AnimeStudio.GUI
                                     exportedCount++;
                                 }
                                 break;
+                            case ExportType.Eiem:
+                                if (ExportEiemFile(asset, exportPath))
+                                {
+                                    exportedCount++;
+                                }
+                                break;
                         }
                     }
                     catch (Exception ex)

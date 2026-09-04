@@ -214,8 +214,17 @@ namespace AnimeStudio.FbxInterop
             var safeRaw = GetSafeFilename(rawName);
             if (safeRaw.Length > 100)
                 safeRaw = safeRaw.Substring(0, 100);
-            var safeName = $"{safeRaw}.png";
-            var fullPath = Path.Combine(_exportDirectory, safeName);
+            var relativeName = texture.Name.Replace('/', Path.DirectorySeparatorChar)
+                .Replace('\\', Path.DirectorySeparatorChar);
+            var relativeDirectory = Path.GetDirectoryName(relativeName) ?? string.Empty;
+            var extension = Path.GetExtension(relativeName);
+            var safeName = string.IsNullOrWhiteSpace(extension) ? $"{safeRaw}.png" : $"{safeRaw}{extension}";
+            var fullPath = Path.GetFullPath(Path.Combine(_exportDirectory, relativeDirectory, safeName));
+            var exportRoot = Path.GetFullPath(_exportDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!fullPath.StartsWith(exportRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Texture path escapes the FBX export directory.");
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
 
             var file = new FileInfo(fullPath);
             using (var writer = new BinaryWriter(file.Create()))

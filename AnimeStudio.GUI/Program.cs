@@ -12,8 +12,13 @@ namespace AnimeStudio.GUI
         ///  The main entry point for the application.
         /// </summary>
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            if (args?.Length > 0 && string.Equals(args[0], "--export-eiem-prefab", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = EndfieldPrefabPackageCommand.Run(args);
+                return;
+            }
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

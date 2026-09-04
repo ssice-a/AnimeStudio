@@ -516,6 +516,188 @@ namespace AnimeStudio.GUI
             return true;
         }
 
+        /// <summary>
+        /// Exports one asset as an EIEM exchange directory.  The directory is
+        /// deliberately self-contained so Blender tooling does not need to
+        /// understand Unity's serialized-file layout.
+        /// </summary>
+        public static bool ExportEiemFile(AssetItem item, string exportPath,
+            string sourceOverride = null, string containerOverride = null)
+        {
+            if (item?.Asset == null || !TryExportFolder(exportPath, item, out var folder))
+                return false;
+
+            Directory.CreateDirectory(folder);
+            var manifest = new Dictionary<string, object>
+            {
+                ["schema"] = 1,
+                ["format"] = "EIEM",
+                ["asset"] = item.Text ?? string.Empty,
+                ["type"] = item.TypeString ?? item.Type.ToString(),
+                ["pathId"] = item.m_PathID,
+                ["container"] = containerOverride ?? item.Container ?? string.Empty,
+                ["source"] = sourceOverride ?? item.SourceFile?.fullName ?? item.SourceFile?.originalPath ?? string.Empty,
+                ["files"] = new List<string>()
+            };
+            var files = (List<string>)manifest["files"];
+
+            try
+            {
+                switch (item.Type)
+                {
+                    case ClassIDType.GameObject:
+                    {
+                        var options = CreateEiemModelOptions();
+                        var convert = new ModelConverter((GameObject)item.Asset, options);
+                        if (convert.MeshList.Count == 0)
+                            return false;
+                        ExportEiemModel(convert, folder, FixFileName(item.Text) + ".fbx", files);
+                        break;
+                    }
+                    case ClassIDType.Animator:
+                    {
+                        var animator = (Animator)item.Asset;
+                        if (!animator.m_GameObject.TryGet<GameObject>(out var gameObject))
+                            return false;
+                        var options = CreateEiemModelOptions();
+                        var convert = new ModelConverter(gameObject, options);
+                        if (convert.MeshList.Count == 0)
+                            return false;
+                        ExportEiemModel(convert, folder, FixFileName(item.Text) + ".fbx", files);
+                        break;
+                    }
+                    case ClassIDType.Mesh:
+                        if (!ExportMesh(item, folder))
+                            return false;
+                        files.Add(FixFileName(item.Text) + ".obj");
+                        break;
+                    case ClassIDType.Texture2D:
+                        if (!ExportTexture2D(item, folder))
+                            return false;
+                        files.Add(FixFileName(item.Text) + "." + Properties.Settings.Default.convertType.ToString().ToLowerInvariant());
+                        break;
+                    case ClassIDType.Material:
+                        if (!ExportJSONFile(item, folder))
+                            return false;
+                        files.Add(FixFileName(item.Text) + ".json");
+                        break;
+                    default:
+                        if (!ExportConvertFile(item, folder) && !ExportRawFile(item, folder))
+                            return false;
+                        files.AddRange(Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
+                            .Select(Path.GetFileName));
+                        break;
+                }
+
+                var manifestPath = Path.Combine(folder, "eiem.json");
+                File.WriteAllText(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
+                return true;
+            }
+            catch
+            {
+                Logger.Error($"EIEM export failed for {item.Text}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Exports the logical Prefab object graph and, optionally, the shared
+        /// EIEM authoring package consumed by Blender and the runtime plugin.
+        /// </summary>
+        internal static bool ExportEndfieldPrefab(VirtualAssetFile file, GameObject root,
+            string outputRoot, bool includeResources, IReadOnlyList<VirtualAssetRecord> assetRecords,
+            EndfieldBundleDependencyIndex dependencies)
+        {
+            if (file == null || root == null || string.IsNullOrWhiteSpace(outputRoot))
+                return false;
+
+            try
+            {
+                var relative = file.Container.Replace('/', Path.DirectorySeparatorChar)
+                    .Replace('\\', Path.DirectorySeparatorChar)
+                    .TrimStart(Path.DirectorySeparatorChar);
+                var outputFull = Path.GetFullPath(outputRoot);
+                var structurePath = Path.GetFullPath(Path.Combine(outputFull, relative + ".structure.txt"));
+                if (!structurePath.StartsWith(outputFull.TrimEnd(Path.DirectorySeparatorChar) +
+                        Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Prefab container escapes the selected output directory.");
+
+                Directory.CreateDirectory(Path.GetDirectoryName(structurePath)!);
+                File.WriteAllText(structurePath, EndfieldPrefabDocument.Build(file, root));
+
+                if (!includeResources)
+                    return true;
+
+                var packageFolder = Path.Combine(Path.GetDirectoryName(structurePath)!,
+                    Path.GetFileNameWithoutExtension(file.Name) + ".eiem");
+                return new EiemPackageWriter(assetRecords, dependencies).Write(file, root, packageFolder);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Endfield Prefab export failed for {file?.Container}: {ex}");
+                return false;
+            }
+        }
+
+        private static ModelConverter.Options CreateEiemModelOptions()
+        {
+            return new ModelConverter.Options
+            {
+                imageFormat = Properties.Settings.Default.convertType,
+                game = Studio.Game,
+                collectAnimations = Properties.Settings.Default.collectAnimations,
+                exportMaterials = true,
+                materials = new HashSet<Material>(),
+                uvs = JsonConvert.DeserializeObject<Dictionary<string, (bool, int)>>(Properties.Settings.Default.uvs),
+                texs = JsonConvert.DeserializeObject<Dictionary<string, int>>(Properties.Settings.Default.texs),
+            };
+        }
+
+        private static void ExportEiemModel(ModelConverter convert, string folder, string modelName,
+            List<string> files, bool includeMaterialFiles = true,
+            bool texturesInSubfolder = false, float scaleFactor = -1f)
+        {
+            if (includeMaterialFiles)
+            {
+                var materialFolder = Path.Combine(folder, "Materials");
+                Directory.CreateDirectory(materialFolder);
+                foreach (var material in convert.MaterialList)
+                {
+                    var name = FixFileName(material.Name ?? "material") + ".json";
+                    var path = Path.Combine(materialFolder, name);
+                    if (!File.Exists(path))
+                        File.WriteAllText(path, JsonConvert.SerializeObject(material, Formatting.Indented));
+                    files.Add(Path.Combine("Materials", name).Replace('\\', '/'));
+                }
+            }
+
+            foreach (var texture in convert.TextureList)
+            {
+                if (texture?.Data == null || texture.Data.Length == 0)
+                    continue;
+                var name = FixFileName(texture.Name ?? "texture.bin");
+                var outputName = texturesInSubfolder ? "Textures/" + name : name;
+                var oldName = texture.Name;
+                texture.Name = outputName;
+                if (texturesInSubfolder)
+                {
+                    foreach (var material in convert.MaterialList)
+                    {
+                        foreach (var reference in material.Textures ?? Enumerable.Empty<ImportedMaterialTexture>())
+                        {
+                            if (string.Equals(reference.Name, oldName, StringComparison.OrdinalIgnoreCase))
+                                reference.Name = outputName;
+                        }
+                    }
+                }
+                files.Add(outputName);
+            }
+
+            var modelPath = Path.Combine(folder, modelName);
+            ExportFbx(convert, modelPath, scaleFactor);
+            files.Add(modelName);
+        }
+
         public static void ExportGameObjectMerge(List<GameObject> gameObject, string exportPath, List<AssetItem> animationList = null)
         {
             var rootName = Path.GetFileNameWithoutExtension(exportPath);
@@ -545,7 +727,7 @@ namespace AnimeStudio.GUI
             ExportFbx(convert, exportPath);
         }
 
-        private static void ExportFbx(IImported convert, string exportPath)
+        private static void ExportFbx(IImported convert, string exportPath, float scaleFactor = -1f)
         {
             var exportOptions = new Fbx.ExportOptions()
             {
@@ -557,7 +739,7 @@ namespace AnimeStudio.GUI
                 exportBlendShape = Properties.Settings.Default.exportBlendShape,
                 castToBone = Properties.Settings.Default.castToBone,
                 boneSize = (int)Properties.Settings.Default.boneSize,
-                scaleFactor = (float)Properties.Settings.Default.scaleFactor,
+                scaleFactor = scaleFactor < 0 ? (float)Properties.Settings.Default.scaleFactor : scaleFactor,
                 fbxVersion = Properties.Settings.Default.fbxVersion,
                 fbxFormat = Properties.Settings.Default.fbxFormat
             };

@@ -1,5 +1,6 @@
 ﻿
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using OpenTK.Graphics.OpenGL;
 using System;
 using System.Collections.Generic;
@@ -101,6 +102,705 @@ namespace AnimeStudio.GUI
             InitializeLogger();
             InitalizeOptions();
             FMODinit();
+            InitializeEndfieldVirtualPathFilter();
+            sceneTreeView.BeforeExpand += sceneTreeView_BeforeExpand;
+            sceneTreeView.AfterSelect += sceneTreeView_AfterSelect;
+        }
+
+        private ToolStripMenuItem endfieldVirtualPathsToolStripMenuItem;
+        private ToolStripMenuItem openEndfieldVfsToolStripMenuItem;
+        private VirtualAssetPathIndex endfieldVirtualPathIndex;
+        private EndfieldBundleDependencyIndex endfieldDependencyIndex;
+        private EndfieldVfsArchive endfieldVfsArchive;
+        private readonly List<VirtualAssetRecord> endfieldVirtualAssetRecords = new();
+        private List<VirtualAssetRecord> endfieldVisibleAssetRecords = new();
+        private readonly Dictionary<string, AssetItem> endfieldLoadedAssetLookup = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, AnimeStudio.Object> endfieldLoadedObjectLookup = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SemaphoreSlim endfieldPreviewLock = new(1, 1);
+        private CancellationTokenSource endfieldPreviewCancellation = new();
+        private CancellationTokenSource endfieldIndexCancellation = new();
+        private int endfieldListOperationGeneration;
+        private bool endfieldVirtualAssetListMode;
+        private string endfieldVirtualMapPath = string.Empty;
+        private string endfieldWorkspace = string.Empty;
+        private List<TreeNode> endfieldOriginalSceneNodes;
+        private VirtualAssetFile endfieldSelectedVirtualFile;
+        private GameObject endfieldSelectedPrefabRoot;
+
+        private void InitializeEndfieldVirtualPathFilter()
+        {
+            openEndfieldVfsToolStripMenuItem = new ToolStripMenuItem
+            {
+                Name = "openEndfieldVfsToolStripMenuItem",
+                Text = "Open Endfield VFS...",
+                ToolTipText = "Index the game VFS and load individual bundles only when an asset is selected"
+            };
+            openEndfieldVfsToolStripMenuItem.Click += openEndfieldVfsToolStripMenuItem_Click;
+            fileToolStripMenuItem.DropDownItems.Insert(2, openEndfieldVfsToolStripMenuItem);
+
+            endfieldVirtualPathsToolStripMenuItem = new ToolStripMenuItem
+            {
+                Name = "endfieldVirtualPathsToolStripMenuItem",
+                Text = "Unified VFS Paths (Endfield)",
+                CheckOnClick = true,
+                Tag = "virtual-path-filter",
+                ToolTipText = "Merge Endfield AssetMap containers into the Scene Hierarchy view"
+            };
+            endfieldVirtualPathsToolStripMenuItem.Click += endfieldVirtualPathsToolStripMenuItem_Click;
+            filterTypeToolStripMenuItem.DropDownItems.Add(new ToolStripSeparator { Tag = "virtual-path-filter" });
+            filterTypeToolStripMenuItem.DropDownItems.Add(endfieldVirtualPathsToolStripMenuItem);
+
+            formatSpecificToolStripMenuItem.Enabled = true;
+            var eiemMenu = new ToolStripMenuItem("EIEM");
+            eiemMenu.DropDownItems.Add("All assets", null,
+                (_, _) => ExportAssets(ExportFilter.All, ExportType.Eiem));
+            eiemMenu.DropDownItems.Add("Selected assets", null,
+                (_, _) => ExportAssets(ExportFilter.Selected, ExportType.Eiem));
+            eiemMenu.DropDownItems.Add("Filtered assets", null,
+                (_, _) => ExportAssets(ExportFilter.Filtered, ExportType.Eiem));
+            eiemMenu.DropDownItems.Add(new ToolStripSeparator());
+            eiemMenu.DropDownItems.Add("Checked Prefab structure...", null,
+                async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: false));
+            eiemMenu.DropDownItems.Add("Checked Prefab as EIEM mod package...", null,
+                async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: true));
+            formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
+
+            var importJson = new ToolStripMenuItem
+            {
+                Name = "importEiemJsonToolStripMenuItem",
+                Text = "Export EIEM from JSON...",
+                ToolTipText = "Use a runtime or EIEM JSON selection file to export matching assets"
+            };
+            importJson.Click += importEiemJsonToolStripMenuItem_Click;
+            fileToolStripMenuItem.DropDownItems.Insert(3, importJson);
+        }
+
+        private sealed record EiemJsonSelector(string Name, string Type,
+            string Source, string Container, long? PathId);
+        private sealed record ResolvedEiemSelection(EiemJsonSelector Selector,
+            VirtualAssetRecord Record, AssetItem Asset, int CandidateCount);
+
+        private async void importEiemJsonToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Filter = "EIEM or runtime JSON|*.json|All files|*.*",
+                Multiselect = false,
+                Title = "Select an EIEM/runtime JSON selection file"
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            List<EiemJsonSelector> selectors;
+            try
+            {
+                selectors = ReadEiemJsonSelectors(dialog.FileName);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, $"Unable to read JSON: {ex.Message}", "EIEM JSON",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            if (selectors.Count == 0)
+            {
+                MessageBox.Show(this, "The JSON contains no asset selectors.", "EIEM JSON",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var folder = new OpenFolderDialog
+            {
+                InitialFolder = saveDirectoryBackup,
+                Title = "Select EIEM export folder"
+            };
+            if (folder.ShowDialog(this) != DialogResult.OK)
+                return;
+            saveDirectoryBackup = folder.Folder;
+
+            timer.Stop();
+            StatusStripUpdate($"Resolving {selectors.Count:N0} JSON asset selector(s)...");
+            var exported = 0;
+            var skipped = 0;
+            var resolved = ResolveEiemJsonSelections(selectors);
+            var ambiguous = resolved.Count(x => x.CandidateCount > 1);
+
+            // Load each source Bundle once. Runtime scene dumps often contain
+            // many renderers from the same character Bundle.
+            foreach (var batch in resolved.Where(x => x.Record != null)
+                         .GroupBy(x => x.Record.Source, StringComparer.OrdinalIgnoreCase))
+            {
+                var first = batch.First();
+                try
+                {
+                    if (endfieldVfsArchive == null)
+                    {
+                        skipped += batch.Count();
+                        continue;
+                    }
+                    await PreviewEndfieldAssetAsync(first.Record);
+                    foreach (var selection in batch)
+                    {
+                        var item = FindLoadedEndfieldAsset(selection.Record);
+                        if (item == null || !Exporter.ExportEiemFile(item,
+                                BuildEiemJsonExportPath(folder.Folder, selection.Record),
+                                selection.Record.Source, selection.Record.Container))
+                            skipped++;
+                        else
+                            exported++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    skipped += batch.Count();
+                    Logger.Error($"EIEM JSON export failed for {first.Selector.Name}: {ex.Message}");
+                }
+            }
+            foreach (var selection in resolved.Where(x => x.Record == null))
+            {
+                try
+                {
+                    if (string.Equals(selection.Selector.Type, "Bundle", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (endfieldVfsArchive == null ||
+                            !ExportEiemBundle(folder.Folder, selection.Selector.Source))
+                            skipped++;
+                        else
+                            exported++;
+                    }
+                    else if (selection.Asset == null || !Exporter.ExportEiemFile(selection.Asset, folder.Folder))
+                        skipped++;
+                    else
+                        exported++;
+                }
+                catch (Exception ex)
+                {
+                    skipped++;
+                    Logger.Error($"EIEM JSON export failed for {selection.Selector.Name}: {ex.Message}");
+                }
+            }
+            StatusStripUpdate($"Finished EIEM JSON export: {exported} exported, {skipped} skipped" +
+                (ambiguous > 0 ? $", {ambiguous} ambiguous (not guessed)." : "."));
+            if (exported > 0 && Properties.Settings.Default.openAfterExport)
+                Studio.OpenFolderInExplorer(folder.Folder);
+        }
+
+        private static List<EiemJsonSelector> ReadEiemJsonSelectors(string path)
+        {
+            var root = JToken.Parse(File.ReadAllText(path));
+            var result = new List<EiemJsonSelector>();
+            var candidates = root is JArray array ? array : null;
+            if (candidates != null)
+            {
+                foreach (var token in candidates)
+                    AddEiemJsonSelectorTree(result, token);
+                return DeduplicateEiemJsonSelectors(result);
+            }
+
+            foreach (var key in new[] { "meshes", "assets", "records", "selectors" })
+            {
+                if (root[key] is JArray entries)
+                    foreach (var token in entries)
+                        AddEiemJsonSelectorTree(result, token);
+            }
+            // Runtime scene dumps include a diagnostic list of every Bundle
+            // observed during the session. It is context for offline lookup,
+            // not an instruction to export all of them. A JSON containing
+            // only a bundles array is still treated as an explicit Bundle
+            // selection file.
+            if (result.Count == 0 && root["bundles"] is JArray bundles)
+                foreach (var token in bundles)
+                    AddEiemJsonSelector(result, token);
+            if (result.Count == 0)
+                AddEiemJsonSelectorTree(result, root);
+            return DeduplicateEiemJsonSelectors(result);
+        }
+
+        private static List<EiemJsonSelector> DeduplicateEiemJsonSelectors(
+            IEnumerable<EiemJsonSelector> selectors)
+        {
+            return selectors
+                .GroupBy(x => $"{x.Name}|{x.Type}|{x.Source}|{x.Container}|{x.PathId}",
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(x => x.First()).ToList();
+        }
+
+        private static void AddEiemJsonSelectorTree(List<EiemJsonSelector> result, JToken token)
+        {
+            AddEiemJsonSelector(result, token);
+            if (token is not JObject obj)
+                return;
+
+            if (obj["materials"] is JArray materials)
+            {
+                foreach (var material in materials.OfType<JObject>())
+                {
+                    AddEiemJsonSelector(result, material, "Material");
+                    if (material["textures"] is JArray textures)
+                        foreach (var texture in textures.OfType<JObject>())
+                            AddEiemJsonSelector(result, texture, "Texture");
+                }
+            }
+        }
+
+        private static void AddEiemJsonSelector(List<EiemJsonSelector> result, JToken token,
+            string defaultType = null)
+        {
+            if (token is not JObject obj)
+                return;
+            var name = (string)obj["name"] ?? (string)obj["asset"] ??
+                       (string)obj["lookupName"] ?? string.Empty;
+            var meshText = (string)obj["mesh"] ?? string.Empty;
+            var bundlePath = (string)obj["path"] ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(bundlePath) &&
+                bundlePath.EndsWith(".ab", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(new EiemJsonSelector(Path.GetFileName(bundlePath), "Bundle",
+                    bundlePath.Replace('\\', '/'), string.Empty, null));
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(meshText))
+            {
+                var match = Regex.Match(meshText, "name=\"(?<name>[^\"]+)\"",
+                    RegexOptions.IgnoreCase);
+                name = match.Success ? match.Groups["name"].Value : meshText;
+            }
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+            if (name.StartsWith("<", StringComparison.Ordinal) &&
+                name.EndsWith(">", StringComparison.Ordinal))
+                return;
+            var type = (string)obj["type"] ?? (string)obj["lookupType"];
+            if (string.IsNullOrWhiteSpace(type))
+                type = defaultType ?? (!string.IsNullOrWhiteSpace(meshText)
+                    ? "Mesh" : ((string)obj["rendererType"] ?? "Mesh"));
+            var source = (string)obj["sourcePath"] ?? (string)obj["bundle"] ??
+                         (string)obj["source"] ?? bundlePath ?? string.Empty;
+            if (string.Equals(source, "runtime-observation", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(source, "offline-index-required", StringComparison.OrdinalIgnoreCase))
+                source = string.Empty;
+            var container = (string)obj["container"] ?? (string)obj["logicalPath"] ??
+                            string.Empty;
+            long? pathId = null;
+            var pathToken = obj["pathId"] ?? obj["PathID"] ?? obj["nativePathId"];
+            if (pathToken != null && long.TryParse(pathToken.ToString(), out var parsed))
+                pathId = parsed;
+            result.Add(new EiemJsonSelector(name, type, source, container, pathId));
+        }
+
+        private List<ResolvedEiemSelection> ResolveEiemJsonSelections(
+            IReadOnlyList<EiemJsonSelector> selectors)
+        {
+            var records = new VirtualAssetRecord[selectors.Count];
+            var candidateCounts = new int[selectors.Count];
+            if (endfieldVirtualAssetRecords.Count > 0)
+            {
+                var pendingByName = selectors
+                    .Select((selector, index) => (selector, index))
+                    .Where(x => !string.Equals(x.selector.Type, "Bundle",
+                        StringComparison.OrdinalIgnoreCase))
+                    .GroupBy(x => x.selector.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(x => x.Key, x => x.ToArray(),
+                        StringComparer.OrdinalIgnoreCase);
+
+                foreach (var record in endfieldVirtualAssetRecords)
+                {
+                    if (!pendingByName.TryGetValue(record.Name, out var candidates))
+                        continue;
+                    foreach (var candidate in candidates)
+                    {
+                        if (!EiemRecordMatchesSelector(candidate.selector, record))
+                            continue;
+                        candidateCounts[candidate.index]++;
+                        if (records[candidate.index] == null)
+                            records[candidate.index] = record;
+                    }
+                }
+            }
+
+            for (var index = 0; index < records.Length; index++)
+            {
+                if (candidateCounts[index] <= 1)
+                    continue;
+                Logger.Warning($"EIEM selector is ambiguous and will not be guessed: " +
+                    $"{selectors[index].Type}:{selectors[index].Name} " +
+                    $"({candidateCounts[index]} index matches). Runtime path/container is required.");
+                records[index] = null;
+            }
+            return selectors.Select((selector, index) => new ResolvedEiemSelection(
+                selector, records[index], candidateCounts[index] > 1
+                    ? null : FindNormalJsonAsset(selector),
+                candidateCounts[index])).ToList();
+        }
+
+        private static bool EiemRecordMatchesSelector(EiemJsonSelector selector,
+            VirtualAssetRecord record)
+        {
+            if (!EiemAssetTypeMatches(selector.Type, record.Type))
+                return false;
+            if (selector.PathId.HasValue && selector.PathId.Value != record.PathId)
+                return false;
+            if (!string.IsNullOrWhiteSpace(selector.Container) &&
+                !EiemPathMatches(selector.Container, record.Container))
+                return false;
+            if (string.IsNullOrWhiteSpace(selector.Source))
+                return true;
+            var source = selector.Source.Replace('\\', '/');
+            return record.Source.Contains(source, StringComparison.OrdinalIgnoreCase) ||
+                   source.Contains(record.Source, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool EiemPathMatches(string requested, string actual)
+        {
+            var left = (requested ?? string.Empty).Replace('\\', '/').Trim('/');
+            var right = (actual ?? string.Empty).Replace('\\', '/').Trim('/');
+            return string.Equals(left, right, StringComparison.OrdinalIgnoreCase) ||
+                   left.EndsWith("/" + right, StringComparison.OrdinalIgnoreCase) ||
+                   right.EndsWith("/" + left, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool EiemAssetTypeMatches(string requested, string actual)
+        {
+            if (string.IsNullOrWhiteSpace(requested))
+                return true;
+            if (string.Equals(requested, actual, StringComparison.OrdinalIgnoreCase))
+                return true;
+            return string.Equals(requested, "Texture", StringComparison.OrdinalIgnoreCase) &&
+                   (actual?.StartsWith("Texture", StringComparison.OrdinalIgnoreCase) == true ||
+                    string.Equals(actual, "Cubemap", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static AssetItem FindNormalJsonAsset(EiemJsonSelector selector)
+        {
+            var type = selector.Type ?? string.Empty;
+            if (string.Equals(type, "Bundle", StringComparison.OrdinalIgnoreCase))
+                return null;
+            return Studio.exportableAssets.FirstOrDefault(x =>
+                string.Equals(x.Text, selector.Name, StringComparison.OrdinalIgnoreCase) &&
+                EiemAssetTypeMatches(type, x.TypeString));
+        }
+
+        private static string BuildEiemJsonExportPath(string root, VirtualAssetRecord record)
+        {
+            if (record == null || string.IsNullOrWhiteSpace(record.Container))
+                return root;
+            var parts = record.Container.Replace('\\', '/').Split('/',
+                StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length <= 1)
+                return root;
+            var relative = parts.Take(parts.Length - 1)
+                .Select(Exporter.FixFileName)
+                .ToArray();
+            return Path.Combine(new[] { root }.Concat(relative).ToArray());
+        }
+
+        private bool ExportEiemBundle(string outputRoot, string logicalPath)
+        {
+            var normalized = EndfieldVfsArchive.NormalizeLogicalPath(logicalPath);
+            if (string.IsNullOrWhiteSpace(normalized) || endfieldVfsArchive == null ||
+                !endfieldVfsArchive.TryGet(normalized, out var entry))
+                return false;
+
+            var output = Path.Combine(outputRoot, normalized.Replace('/', Path.DirectorySeparatorChar));
+            var directory = Path.GetDirectoryName(output);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+            if (File.Exists(output) && new FileInfo(output).Length == entry.Length)
+                return true;
+
+            var temp = output + ".tmp";
+            File.WriteAllBytes(temp, endfieldVfsArchive.ReadPayload(normalized));
+            File.Move(temp, output, true);
+            return true;
+        }
+
+        private async void openEndfieldVfsToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            var vfsDialog = new OpenFolderDialog
+            {
+                Title = "Select Endfield VFS folder (the folder containing .blc and .chk files)",
+                InitialFolder = FindDefaultEndfieldVfsRoot()
+            };
+            if (vfsDialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            var vfsRoot = ResolveEndfieldVfsRoot(vfsDialog.Folder);
+            if (vfsRoot == null)
+            {
+                MessageBox.Show(this, "The selected folder does not contain Endfield .blc/.chk files.",
+                    "Invalid Endfield VFS", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            var workspaceDialog = new OpenFolderDialog
+            {
+                Title = "Select workspace for the small on-demand cache (do not select drive C)",
+                InitialFolder = string.IsNullOrWhiteSpace(endfieldWorkspace) ? Path.GetPathRoot(Environment.CurrentDirectory) : endfieldWorkspace
+            };
+            if (workspaceDialog.ShowDialog(this) != DialogResult.OK)
+                return;
+            var workspace = Path.GetFullPath(workspaceDialog.Folder);
+            if (string.Equals(Path.GetPathRoot(workspace), @"C:\", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this, "Choose a workspace outside drive C. VFS indexes and preview caches will not be written to C.",
+                    "Workspace required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            try
+            {
+                openEndfieldVfsToolStripMenuItem.Enabled = false;
+                StatusStripUpdate("Reading Endfield VFS metadata...");
+                var archive = await Task.Run(() => EndfieldVfsArchive.Open(vfsRoot));
+                var game = GameManager.GetGameByType(GameType.ArknightsEndfield);
+
+                string mapPath;
+                if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out mapPath))
+                {
+                    endfieldIndexCancellation.Cancel();
+                    endfieldIndexCancellation.Dispose();
+                    endfieldIndexCancellation = new CancellationTokenSource();
+                    var progress = new Progress<EndfieldIndexProgress>(UpdateEndfieldIndexProgress);
+                    StatusStripUpdate("No current resource index. Building directly from VFS; File > Abort pauses safely.");
+                    mapPath = await EndfieldVfsAssetIndexBuilder.BuildAsync(
+                        archive, workspace, game, progress, endfieldIndexCancellation.Token);
+                }
+
+                StatusStripUpdate("Loading compact Endfield resource paths and dependencies...");
+                var loadedIndex = await Task.Run(() => EndfieldIndexStore.Load(mapPath));
+                if (!string.Equals(loadedIndex.VfsFingerprint, archive.Fingerprint, StringComparison.Ordinal))
+                    throw new InvalidDataException("The Endfield index belongs to a different VFS version.");
+                var assetIndex = loadedIndex.Assets;
+                var dependencyIndex = loadedIndex.Dependencies;
+
+                ResetForm();
+                endfieldVfsArchive = archive;
+                endfieldDependencyIndex = dependencyIndex;
+                endfieldWorkspace = workspace;
+                ActivateEndfieldVirtualIndex(assetIndex, mapPath);
+                Studio.Game = game;
+                assetsManager.Game = Studio.Game;
+                assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+                Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - Endfield VFS";
+                StatusStripUpdate($"Ready: {endfieldVfsArchive.Entries.Count:N0} VFS files, {endfieldVirtualPathIndex.AssetCount:N0} assets, {endfieldDependencyIndex.CabCount:N0} CABs. Select an asset to preview it.");
+            }
+            catch (OperationCanceledException)
+            {
+                StatusStripUpdate("Endfield index build paused. Open the same VFS/workspace to resume from the last checkpoint.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to open Endfield VFS: {ex}");
+                MessageBox.Show(this, ex.Message, "Endfield VFS error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                StatusStripUpdate("Failed to open Endfield VFS.");
+            }
+            finally
+            {
+                openEndfieldVfsToolStripMenuItem.Enabled = true;
+            }
+        }
+
+        private void UpdateEndfieldIndexProgress(EndfieldIndexProgress value)
+        {
+            var percent = value.TotalBundles == 0 ? 0 : value.ProcessedBundles * 100 / value.TotalBundles;
+            SetProgressBarValue(percent);
+            var rate = value.Elapsed.TotalSeconds <= 0 ? 0 : value.ProcessedBundles / value.Elapsed.TotalSeconds;
+            var remaining = rate <= 0 ? TimeSpan.Zero :
+                TimeSpan.FromSeconds((value.TotalBundles - value.ProcessedBundles) / rate);
+            StatusStripUpdate(
+                $"Indexing VFS {value.ProcessedBundles:N0}/{value.TotalBundles:N0} ({percent}%) | " +
+                $"assets {value.AssetCount:N0} | CABs {value.CabCount:N0} | failed {value.FailedBundles:N0} | ETA {remaining:hh\\:mm\\:ss}");
+        }
+
+        private static string FindDefaultEndfieldVfsRoot()
+        {
+            var known = @"D:\Hypergryph Launcher\games\Endfield Game\Endfield_Data\StreamingAssets\VFS";
+            return Directory.Exists(known) ? known : Environment.CurrentDirectory;
+        }
+
+        private static string ResolveEndfieldVfsRoot(string selectedPath)
+        {
+            var candidates = new[]
+            {
+                selectedPath,
+                Path.Combine(selectedPath, "Endfield_Data", "StreamingAssets", "VFS"),
+                Path.Combine(selectedPath, "StreamingAssets", "VFS")
+            };
+            return candidates.FirstOrDefault(path => Directory.Exists(path) &&
+                Directory.EnumerateFiles(path, "*.blc", SearchOption.AllDirectories).Any() &&
+                Directory.EnumerateFiles(path, "*.chk", SearchOption.AllDirectories).Any());
+        }
+
+        private void endfieldVirtualPathsToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            if (!endfieldVirtualPathsToolStripMenuItem.Checked)
+            {
+                Interlocked.Increment(ref endfieldListOperationGeneration);
+                sceneTreeView.Nodes.Clear();
+                endfieldVirtualAssetListMode = false;
+                endfieldVisibleAssetRecords.Clear();
+                assetListView.VirtualListSize = visibleAssets.Count;
+                assetListView.Refresh();
+                if (endfieldOriginalSceneNodes != null)
+                {
+                    sceneTreeView.Nodes.AddRange(endfieldOriginalSceneNodes.ToArray());
+                    endfieldOriginalSceneNodes = null;
+                }
+                StatusStripUpdate("Virtual Asset Paths disabled.");
+                return;
+            }
+
+            if (endfieldVirtualPathIndex != null)
+            {
+                endfieldVirtualAssetListMode = true;
+                endfieldVisibleAssetRecords = endfieldVirtualAssetRecords.ToList();
+                assetListView.VirtualListSize = endfieldVisibleAssetRecords.Count;
+                assetListView.Refresh();
+                BuildVirtualAssetTree(endfieldVirtualPathIndex);
+                StatusStripUpdate($"Loaded {endfieldVirtualPathIndex.AssetCount:N0} assets into {endfieldVirtualPathIndex.DirectoryCount:N0} virtual paths.");
+                return;
+            }
+
+            endfieldVirtualPathsToolStripMenuItem.Checked = false;
+            MessageBox.Show(this, "Use File > Open Endfield VFS first.", "Endfield VFS",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void ActivateEndfieldVirtualIndex(VirtualAssetPathIndex index, string mapPath, bool activate = true)
+        {
+            Interlocked.Increment(ref endfieldListOperationGeneration);
+            endfieldVirtualPathIndex = index;
+            endfieldVirtualMapPath = mapPath;
+            endfieldVirtualAssetRecords.Clear();
+            endfieldVirtualAssetRecords.AddRange(index.Records);
+            endfieldVisibleAssetRecords = endfieldVirtualAssetRecords.ToList();
+            BuildEndfieldLoadedAssetLookup();
+            RebuildEndfieldTypeFilters();
+            endfieldVirtualAssetListMode = true;
+            assetListView.VirtualListSize = endfieldVisibleAssetRecords.Count;
+            assetListView.Refresh();
+            if (activate)
+            {
+                endfieldVirtualPathsToolStripMenuItem.Checked = true;
+                BuildVirtualAssetTree(index);
+            }
+            StatusStripUpdate($"Loaded {index.AssetCount:N0} assets into {index.DirectoryCount:N0} virtual paths.");
+        }
+
+        private void RebuildEndfieldTypeFilters()
+        {
+            for (var i = filterTypeToolStripMenuItem.DropDownItems.Count - 1; i >= 1; i--)
+            {
+                var item = filterTypeToolStripMenuItem.DropDownItems[i];
+                if (item.Tag as string == "endfield-asset-type")
+                    filterTypeToolStripMenuItem.DropDownItems.RemoveAt(i);
+            }
+
+            foreach (var type in endfieldVirtualAssetRecords.Select(x => x.Type)
+                         .Where(x => !string.IsNullOrWhiteSpace(x))
+                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            {
+                var item = new ToolStripMenuItem
+                {
+                    CheckOnClick = true,
+                    Name = $"endfieldType_{type}",
+                    Text = type,
+                    Tag = "endfield-asset-type"
+                };
+                item.Click += typeToolStripMenuItem_Click;
+                filterTypeToolStripMenuItem.DropDownItems.Insert(
+                    filterTypeToolStripMenuItem.DropDownItems.IndexOf(endfieldVirtualPathsToolStripMenuItem), item);
+            }
+            allToolStripMenuItem.Checked = true;
+        }
+
+        private void BuildVirtualAssetTree(VirtualAssetPathIndex index)
+        {
+            sceneTreeView.BeginUpdate();
+            sceneTreeView.Nodes.Clear();
+            var root = new TreeNode("Assets") { Tag = index.Root };
+            AddVirtualAssetTreeChildren(root, index.Root);
+            sceneTreeView.Nodes.Add(root);
+            root.Expand();
+            sceneTreeView.EndUpdate();
+        }
+
+        private void sceneTreeView_BeforeExpand(object sender, TreeViewCancelEventArgs e)
+        {
+            if (endfieldVirtualPathsToolStripMenuItem?.Checked != true ||
+                e.Node.Tag is not VirtualAssetPathNode source ||
+                e.Node.Nodes.Count != 1 || e.Node.Nodes[0].Tag != null)
+                return;
+
+            e.Node.Nodes.Clear();
+            AddVirtualAssetTreeChildren(e.Node, source);
+        }
+
+        private void AddVirtualAssetTreeChildren(TreeNode parent, VirtualAssetPathNode source)
+        {
+            foreach (var child in source.Children.Values)
+            {
+                var isFile = child.Children.Count == 0 && child.Assets.Count > 0 && !IsLargeUnscopedNode(child);
+                // A file is a leaf. Keep the logical file distinct from the
+                // serialized objects it owns; Prefab selection must resolve
+                // its root GameObject instead of binding to an arbitrary bone.
+                var node = isFile
+                    ? new TreeNode(child.Name)
+                    {
+                        Tag = new VirtualAssetFile(child.Assets[0].Container, child.Assets.ToArray())
+                    }
+                    : new TreeNode(child.Name) { Tag = child };
+                if (child.Children.Count > 0 || (!isFile && child.Assets.Count > 0 && !IsLargeUnscopedNode(child)))
+                    node.Nodes.Add(new TreeNode { Tag = null });
+                parent.Nodes.Add(node);
+            }
+
+            const int maxTreeAssets = 200;
+            var visibleAssets = source.Name.Equals("[no container]", StringComparison.OrdinalIgnoreCase)
+                ? 0
+                : Math.Min(source.Assets.Count, maxTreeAssets);
+            for (var i = 0; i < visibleAssets; i++)
+            {
+                var asset = source.Assets[i];
+                var name = Path.GetFileName(asset.Container.Replace('\\', '/'));
+                if (string.IsNullOrWhiteSpace(name))
+                    name = string.IsNullOrWhiteSpace(asset.Name) ? "[unnamed]" : asset.Name;
+                if (!string.IsNullOrWhiteSpace(asset.Type))
+                    name += $" [{asset.Type}]";
+                parent.Nodes.Add(new TreeNode(name) { Tag = asset });
+            }
+            if (source.Assets.Count > visibleAssets)
+                parent.Nodes.Add(new TreeNode($"... {source.Assets.Count - visibleAssets:N0} more assets; use Asset List") { Tag = null });
+        }
+
+        private static VirtualAssetRecord ChooseVirtualFilePreviewAsset(VirtualAssetPathNode file)
+            => ChooseVirtualFilePreviewAsset(file.Assets);
+
+        private static VirtualAssetRecord ChooseVirtualFilePreviewAsset(
+            IReadOnlyList<VirtualAssetRecord> records)
+        {
+            // Prefer the object that gives the native preview the most useful
+            // entry point for a file, without changing the complete object
+            // records retained by Asset List.
+            var priorities = new[]
+            {
+                "GameObject", "Mesh", "Texture2D", "Texture", "Material",
+                "Sprite", "AnimationClip", "Animator", "TextAsset"
+            };
+            foreach (var type in priorities)
+            {
+                var match = records.FirstOrDefault(x =>
+                    string.Equals(x.Type, type, StringComparison.OrdinalIgnoreCase));
+                if (match != null)
+                    return match;
+            }
+            return records.Count > 0 ? records[0] : null;
+        }
+
+        private static bool IsLargeUnscopedNode(VirtualAssetPathNode node)
+        {
+            return node.Name.Equals("[no container]", StringComparison.OrdinalIgnoreCase) && node.Assets.Count > 0;
         }
 
         private void ApplyTheme()
@@ -510,6 +1210,8 @@ namespace AnimeStudio.GUI
 
             Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - {productName} - {assetsManager.assetsFileList[0].unityVersion} - {assetsManager.assetsFileList[0].m_TargetPlatform}";
 
+            if (endfieldVirtualPathIndex != null)
+                BuildEndfieldLoadedAssetLookup();
             assetListView.VirtualListSize = visibleAssets.Count;
 
             sceneTreeView.BeginUpdate();
@@ -567,8 +1269,10 @@ namespace AnimeStudio.GUI
             {
                 for (var i = 1; i < filterTypeToolStripMenuItem.DropDownItems.Count; i++)
                 {
-                    var item = (ToolStripMenuItem)filterTypeToolStripMenuItem.DropDownItems[i];
-                    item.Checked = false;
+                    if (filterTypeToolStripMenuItem.DropDownItems[i] is ToolStripMenuItem item &&
+                        item != endfieldVirtualPathsToolStripMenuItem &&
+                        item.Tag as string != "virtual-path-filter")
+                        item.Checked = false;
                 }
             }
             FilterAssetList();
@@ -759,6 +1463,21 @@ namespace AnimeStudio.GUI
 
         private void assetListView_RetrieveVirtualItem(object sender, RetrieveVirtualItemEventArgs e)
         {
+            if (endfieldVirtualAssetListMode)
+            {
+                if (e.ItemIndex < endfieldVisibleAssetRecords.Count)
+                {
+                    var asset = endfieldVisibleAssetRecords[e.ItemIndex];
+                    var item = new ListViewItem(string.IsNullOrWhiteSpace(asset.Name) ? "[unnamed]" : asset.Name);
+                    item.SubItems.Add(asset.Container);
+                    item.SubItems.Add(asset.Type);
+                    item.SubItems.Add(asset.PathId.ToString());
+                    item.SubItems.Add(string.Empty);
+                    item.SubItems.Add(Path.GetFileName(asset.Source));
+                    e.Item = item;
+                }
+                return;
+            }
             if (e.ItemIndex < visibleAssets.Count)
             {
                 e.Item = visibleAssets[e.ItemIndex];
@@ -924,7 +1643,7 @@ namespace AnimeStudio.GUI
             }
         }
 
-        private void assetListView_ColumnClick(object sender, ColumnClickEventArgs e)
+        private async void assetListView_ColumnClick(object sender, ColumnClickEventArgs e)
         {
             if (sortColumn != e.Column)
             {
@@ -935,6 +1654,34 @@ namespace AnimeStudio.GUI
                 reverseSort = !reverseSort;
             }
             sortColumn = e.Column;
+            if (endfieldVirtualAssetListMode)
+            {
+                var generation = Interlocked.Increment(ref endfieldListOperationGeneration);
+                var column = e.Column;
+                var descending = reverseSort;
+                var sorted = endfieldVisibleAssetRecords.ToList();
+                StatusStripUpdate($"Sorting {sorted.Count:N0} assets...");
+                await Task.Run(() => sorted.Sort((a, b) =>
+                {
+                    var result = column switch
+                    {
+                        0 => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase),
+                        1 => string.Compare(a.Container, b.Container, StringComparison.OrdinalIgnoreCase),
+                        2 => string.Compare(a.Type, b.Type, StringComparison.OrdinalIgnoreCase),
+                        3 => a.PathId.CompareTo(b.PathId),
+                        5 => string.Compare(a.Source, b.Source, StringComparison.OrdinalIgnoreCase),
+                        _ => 0
+                    };
+                    return descending ? -result : result;
+                }));
+                if (generation != endfieldListOperationGeneration || !endfieldVirtualAssetListMode)
+                    return;
+                endfieldVisibleAssetRecords = sorted;
+                assetListView.SelectedIndices.Clear();
+                assetListView.Refresh();
+                StatusStripUpdate($"Sorted {sorted.Count:N0} assets.");
+                return;
+            }
             assetListView.BeginUpdate();
             assetListView.SelectedIndices.Clear();
             if (sortColumn == 4) //FullSize
@@ -967,8 +1714,11 @@ namespace AnimeStudio.GUI
             assetListView.EndUpdate();
         }
 
-        private void selectAsset(object sender, ListViewItemSelectionChangedEventArgs e)
+        private async void selectAsset(object sender, ListViewItemSelectionChangedEventArgs e)
         {
+            if (!e.IsSelected)
+                return;
+
             previewPanel.BackgroundImage = Properties.Resources.preview;
             previewPanel.BackgroundImageLayout = ImageLayout.Center;
             previewPanel.ContextMenuStrip = null;
@@ -983,24 +1733,364 @@ namespace AnimeStudio.GUI
 
             FMODreset();
 
+            if (endfieldVirtualAssetListMode)
+            {
+                if (e.ItemIndex >= 0 && e.ItemIndex < endfieldVisibleAssetRecords.Count)
+                    await PreviewEndfieldAssetAsync(endfieldVisibleAssetRecords[e.ItemIndex]);
+                return;
+            }
+
             lastSelectedItem = (AssetItem)e.Item;
 
-            if (e.IsSelected)
+            if (tabControl2.SelectedIndex == 1)
             {
-                if (tabControl2.SelectedIndex == 1)
+                dumpTextBox.Text = DumpAsset(lastSelectedItem.Asset);
+            }
+            if (enablePreview.Checked)
+            {
+                PreviewAsset(lastSelectedItem);
+                if (displayInfo.Checked && lastSelectedItem.InfoText != null)
                 {
-                    dumpTextBox.Text = DumpAsset(lastSelectedItem.Asset);
-                }
-                if (enablePreview.Checked)
-                {
-                    PreviewAsset(lastSelectedItem);
-                    if (displayInfo.Checked && lastSelectedItem.InfoText != null)
-                    {
-                        assetInfoLabel.Text = lastSelectedItem.InfoText;
-                        assetInfoLabel.Visible = true;
-                    }
+                    assetInfoLabel.Text = lastSelectedItem.InfoText;
+                    assetInfoLabel.Visible = true;
                 }
             }
+        }
+
+        private async void sceneTreeView_AfterSelect(object sender, TreeViewEventArgs e)
+        {
+            if (endfieldVirtualPathsToolStripMenuItem?.Checked != true)
+                return;
+
+            if (e.Node.Tag is VirtualAssetFile file)
+            {
+                endfieldSelectedVirtualFile = file;
+                endfieldSelectedPrefabRoot = null;
+                if (file.IsPrefab)
+                    await PreviewEndfieldPrefabAsync(file);
+                else
+                {
+                    var previewRecord = ChooseVirtualFilePreviewAsset(file.Records);
+                    if (previewRecord != null)
+                        await PreviewEndfieldAssetAsync(previewRecord);
+                }
+            }
+            else if (e.Node.Tag is VirtualAssetRecord asset)
+            {
+                endfieldSelectedVirtualFile = null;
+                endfieldSelectedPrefabRoot = null;
+                await PreviewEndfieldAssetAsync(asset);
+            }
+        }
+
+        private async Task<GameObject> PreviewEndfieldPrefabAsync(VirtualAssetFile file)
+        {
+            if (file == null || !file.IsPrefab || file.Records.Count == 0)
+                return null;
+            if (endfieldVfsArchive == null || string.IsNullOrWhiteSpace(endfieldWorkspace))
+            {
+                StatusStripUpdate("Open Endfield VFS first to preview the Prefab structure.");
+                return null;
+            }
+
+            var source = file.Records.Select(x => x.Source)
+                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                StatusStripUpdate("The selected Prefab has no source Bundle.");
+                return null;
+            }
+
+            ResetEndfieldPreviewCancellation();
+            var token = endfieldPreviewCancellation.Token;
+            try
+            {
+                await endfieldPreviewLock.WaitAsync(token);
+                try
+                {
+                    await LoadEndfieldBundleClosureAsync(source, token);
+                    var sourceCabs = endfieldDependencyIndex?.GetCabNames(source)
+                        ?? Array.Empty<string>();
+                    var gameObjects = assetsManager.assetsFileList
+                        .SelectMany(x => x.Objects).OfType<GameObject>();
+                    var root = EndfieldPrefabDocument.FindRoot(gameObjects, file, sourceCabs);
+                    if (root == null)
+                        throw new InvalidDataException($"Prefab root '{file.Stem}' was not found in its dependency closure.");
+
+                    endfieldSelectedPrefabRoot = root;
+                    lastSelectedItem = new AssetItem(root) { Container = file.Container };
+                    assetInfoLabel.Text = $"Prefab\n{file.Container}\nSource: {source}\n" +
+                                          $"Root PathID: {root.m_PathID}";
+                    assetInfoLabel.Visible = displayInfo.Checked;
+                    ResetEndfieldPreviewSurface();
+                    PreviewText(EndfieldPrefabDocument.Build(file, root));
+                    if (tabControl2.SelectedIndex == 1)
+                        dumpTextBox.Text = DumpAsset(root);
+                    StatusStripUpdate($"Prefab structure: {file.Container}");
+                    return root;
+                }
+                finally
+                {
+                    endfieldPreviewLock.Release();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Endfield Prefab preview failed for {file.Container}: {ex}");
+                StatusStripUpdate($"Prefab preview failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task PreviewEndfieldAssetAsync(VirtualAssetRecord record)
+        {
+            assetInfoLabel.Text = $"{record.Type}\n{record.Container}\nSource: {record.Source}\nPathID: {record.PathId}";
+            assetInfoLabel.Visible = displayInfo.Checked;
+
+            if (!enablePreview.Checked)
+                return;
+            if (endfieldVfsArchive == null || string.IsNullOrWhiteSpace(endfieldWorkspace))
+            {
+                StatusStripUpdate("Open Endfield VFS first to preview indexed assets.");
+                return;
+            }
+
+            var logicalPath = GetEndfieldLogicalBundlePath(record.Source);
+            if (string.IsNullOrWhiteSpace(logicalPath) || !endfieldVfsArchive.TryGet(logicalPath, out _))
+            {
+                StatusStripUpdate($"Bundle is not present in the VFS index: {logicalPath ?? record.Source}");
+                return;
+            }
+
+            ResetEndfieldPreviewCancellation();
+            var token = endfieldPreviewCancellation.Token;
+
+            try
+            {
+                await endfieldPreviewLock.WaitAsync(token);
+                try
+                {
+                    await LoadEndfieldBundleClosureAsync(record.Source, token);
+                    var loadedAsset = FindLoadedEndfieldAsset(record);
+                    if (loadedAsset == null)
+                        throw new InvalidDataException($"PathID {record.PathId} ({record.Type}) was not found after parsing the bundle.");
+
+                    lastSelectedItem = loadedAsset;
+                    ResetEndfieldPreviewSurface();
+                    PreviewAsset(loadedAsset);
+                    if (displayInfo.Checked && loadedAsset.InfoText != null)
+                    {
+                        assetInfoLabel.Text = loadedAsset.InfoText;
+                        assetInfoLabel.Visible = true;
+                    }
+                    if (tabControl2.SelectedIndex == 1)
+                        dumpTextBox.Text = DumpAsset(loadedAsset.Asset);
+                    StatusStripUpdate($"Previewing {record.Type}: {record.Container}");
+                }
+                finally
+                {
+                    endfieldPreviewLock.Release();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // A newer selection superseded this one.
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Endfield on-demand preview failed for {record.Source}: {ex}");
+                StatusStripUpdate($"Preview failed: {ex.Message}");
+            }
+        }
+
+        private void ResetEndfieldPreviewCancellation()
+        {
+            endfieldPreviewCancellation.Cancel();
+            endfieldPreviewCancellation.Dispose();
+            endfieldPreviewCancellation = new CancellationTokenSource();
+        }
+
+        private void ResetEndfieldPreviewSurface()
+        {
+            previewPanel.BackgroundImage = Properties.Resources.preview;
+            previewPanel.BackgroundImageLayout = ImageLayout.Center;
+            previewPanel.ContextMenuStrip = null;
+            classTextBox.Visible = false;
+            textPreviewBox.Visible = false;
+            fontPreviewBox.Visible = false;
+            FMODpanel.Visible = false;
+            glControl.Visible = false;
+            FMODreset();
+        }
+
+        private async Task LoadEndfieldBundleClosureAsync(string source, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var logicalPath = GetEndfieldLogicalBundlePath(source);
+            if (string.IsNullOrWhiteSpace(logicalPath) || !endfieldVfsArchive.TryGet(logicalPath, out _))
+                throw new InvalidDataException($"Bundle is not present in the VFS index: {logicalPath ?? source}");
+
+            var bundlePaths = endfieldDependencyIndex?.ResolveBundleClosure(logicalPath)
+                ?? new[] { logicalPath };
+            StatusStripUpdate($"Reading {bundlePaths.Count:N0} required Bundle(s) from VFS...");
+            var cachePaths = await Task.Run(() => bundlePaths
+                .Where(path => endfieldVfsArchive.TryGet(path, out _))
+                .Select(path => endfieldVfsArchive.ExtractToCache(path, endfieldWorkspace))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray(), token);
+            token.ThrowIfCancellationRequested();
+            if (cachePaths.Length == 0)
+                throw new InvalidDataException("None of the required Bundles were present in the VFS index.");
+
+            // Any AssetItem retained across Clear() points at a disposed
+            // ObjectReader. Clear UI references before closing those streams.
+            lastSelectedItem = null;
+            endfieldSelectedPrefabRoot = null;
+            dumpTextBox.Clear();
+            assetsManager.Clear();
+            exportableAssets.Clear();
+            visibleAssets.Clear();
+            endfieldLoadedAssetLookup.Clear();
+            endfieldLoadedObjectLookup.Clear();
+            assetsManager.Game = Studio.Game;
+            assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+            assetsManager.ResolveDependencies = false;
+            assetsManager.FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
+
+            StatusStripUpdate($"Parsing {cachePaths.Length:N0} required Bundle(s)...");
+            await Task.Run(() => assetsManager.LoadFiles(cachePaths, mergeSplitAssets: false), token);
+            token.ThrowIfCancellationRequested();
+            if (assetsManager.assetsFileList.Count == 0)
+                throw new InvalidDataException("The selected VFS entry did not contain a readable Unity bundle.");
+
+            await Task.Run(BuildAssetData, token);
+            token.ThrowIfCancellationRequested();
+            BuildEndfieldLoadedAssetLookup();
+        }
+
+        private static string GetEndfieldLogicalBundlePath(string source)
+        {
+            if (string.IsNullOrWhiteSpace(source))
+                return string.Empty;
+            var normalized = source.Replace('\\', '/');
+            var marker = normalized.IndexOf("Bundles/", StringComparison.OrdinalIgnoreCase);
+            if (marker >= 0)
+                normalized = normalized[marker..];
+            return EndfieldVfsArchive.NormalizeLogicalPath(normalized);
+        }
+
+        private void BuildEndfieldLoadedAssetLookup()
+        {
+            endfieldLoadedAssetLookup.Clear();
+            endfieldLoadedObjectLookup.Clear();
+            foreach (var asset in exportableAssets)
+            {
+                var source = asset.SourceFile?.fullName;
+                if (string.IsNullOrWhiteSpace(source))
+                    continue;
+
+                var key = BuildEndfieldAssetKey(source, asset.m_PathID, asset.TypeString);
+                if (!endfieldLoadedAssetLookup.ContainsKey(key))
+                    endfieldLoadedAssetLookup.Add(key, asset);
+
+                var fileKey = BuildEndfieldAssetKey(Path.GetFileName(source), asset.m_PathID, asset.TypeString);
+                if (!endfieldLoadedAssetLookup.ContainsKey(fileKey))
+                    endfieldLoadedAssetLookup.Add(fileKey, asset);
+            }
+
+            // GameObjects are intentionally absent from exportableAssets and
+            // live in the scene tree. Index every parsed object separately so
+            // an indexed Prefab/GameObject can still be resolved by PathID.
+            foreach (var obj in assetsManager.assetsFileList.SelectMany(x => x.Objects))
+            {
+                var source = obj.assetsFile?.fullName;
+                if (string.IsNullOrWhiteSpace(source))
+                    continue;
+                var type = obj.type.ToString();
+                var key = BuildEndfieldAssetKey(source, obj.m_PathID, type);
+                if (!endfieldLoadedObjectLookup.ContainsKey(key))
+                    endfieldLoadedObjectLookup.Add(key, obj);
+                var fileKey = BuildEndfieldAssetKey(Path.GetFileName(source), obj.m_PathID, type);
+                if (!endfieldLoadedObjectLookup.ContainsKey(fileKey))
+                    endfieldLoadedObjectLookup.Add(fileKey, obj);
+            }
+        }
+
+        private AssetItem FindLoadedEndfieldAsset(VirtualAssetRecord record)
+        {
+            var type = record.Type ?? string.Empty;
+            var key = BuildEndfieldAssetKey(record.Source, record.PathId, type);
+            if (endfieldLoadedAssetLookup.TryGetValue(key, out var asset))
+                return asset;
+
+            key = BuildEndfieldAssetKey(Path.GetFileName(record.Source), record.PathId, type);
+            if (endfieldLoadedAssetLookup.TryGetValue(key, out asset))
+                return asset;
+
+            key = BuildEndfieldAssetKey(record.Source, record.PathId, type);
+            if (endfieldLoadedObjectLookup.TryGetValue(key, out var loadedObject))
+                return CreateEndfieldAssetItem(loadedObject, record.Container);
+
+            key = BuildEndfieldAssetKey(Path.GetFileName(record.Source), record.PathId, type);
+            if (endfieldLoadedObjectLookup.TryGetValue(key, out loadedObject))
+                return CreateEndfieldAssetItem(loadedObject, record.Container);
+
+            var sourceCabs = endfieldDependencyIndex?.GetCabNames(record.Source);
+            if (sourceCabs?.Count > 0)
+            {
+                var cabNames = sourceCabs.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                asset = exportableAssets.FirstOrDefault(x =>
+                    x.m_PathID == record.PathId &&
+                    string.Equals(x.TypeString, type, StringComparison.OrdinalIgnoreCase) &&
+                    cabNames.Contains(Path.GetFileName(x.SourceFile?.fileName ?? string.Empty)));
+                if (asset != null)
+                    return asset;
+
+                loadedObject = assetsManager.assetsFileList
+                    .Where(x => cabNames.Contains(Path.GetFileName(x.fileName ?? string.Empty)))
+                    .SelectMany(x => x.Objects)
+                    .FirstOrDefault(x => x.m_PathID == record.PathId &&
+                        string.Equals(x.type.ToString(), type, StringComparison.OrdinalIgnoreCase));
+                if (loadedObject != null)
+                    return CreateEndfieldAssetItem(loadedObject, record.Container);
+            }
+
+            asset = exportableAssets.FirstOrDefault(x =>
+                x.m_PathID == record.PathId &&
+                string.Equals(x.TypeString, type, StringComparison.OrdinalIgnoreCase));
+            if (asset != null)
+                return asset;
+
+            asset = exportableAssets.FirstOrDefault(x =>
+                x.m_PathID == record.PathId &&
+                string.Equals(x.Text, record.Name, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(x.TypeString, type, StringComparison.OrdinalIgnoreCase));
+            if (asset != null)
+                return asset;
+
+            loadedObject = assetsManager.assetsFileList.SelectMany(x => x.Objects)
+                .FirstOrDefault(x => x.m_PathID == record.PathId &&
+                    string.Equals(x.Name, record.Name, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.type.ToString(), type, StringComparison.OrdinalIgnoreCase));
+            return loadedObject == null ? null : CreateEndfieldAssetItem(loadedObject, record.Container);
+        }
+
+        private static AssetItem CreateEndfieldAssetItem(AnimeStudio.Object asset, string container)
+        {
+            var item = new AssetItem(asset) { Container = container ?? string.Empty };
+            item.SetSubItems();
+            return item;
+        }
+
+        private static string BuildEndfieldAssetKey(string source, long pathId, string type)
+        {
+            var normalized = source ?? string.Empty;
+            try { normalized = Path.GetFullPath(normalized); } catch { }
+            return $"{normalized.Replace('\\', '/')}|{pathId}|{type}";
         }
 
         private void classesListView_ItemSelectionChanged(object sender, ListViewItemSelectionChangedEventArgs e)
@@ -1694,7 +2784,28 @@ namespace AnimeStudio.GUI
 
         public void ResetForm()
         {
+            Interlocked.Increment(ref endfieldListOperationGeneration);
             Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion}";
+            endfieldVirtualPathsToolStripMenuItem.Checked = false;
+            endfieldVirtualPathIndex = null;
+            endfieldDependencyIndex = null;
+            endfieldVfsArchive = null;
+            endfieldVirtualAssetListMode = false;
+            endfieldVirtualAssetRecords.Clear();
+            endfieldVisibleAssetRecords.Clear();
+            endfieldLoadedAssetLookup.Clear();
+            endfieldLoadedObjectLookup.Clear();
+            endfieldVirtualMapPath = string.Empty;
+            endfieldWorkspace = string.Empty;
+            endfieldOriginalSceneNodes = null;
+            endfieldSelectedVirtualFile = null;
+            endfieldSelectedPrefabRoot = null;
+            endfieldPreviewCancellation.Cancel();
+            endfieldPreviewCancellation.Dispose();
+            endfieldPreviewCancellation = new CancellationTokenSource();
+            endfieldIndexCancellation.Cancel();
+            endfieldIndexCancellation.Dispose();
+            endfieldIndexCancellation = new CancellationTokenSource();
             assetsManager.Clear();
             assemblyLoader.Clear();
             exportableAssets.Clear();
@@ -1722,7 +2833,13 @@ namespace AnimeStudio.GUI
             var count = filterTypeToolStripMenuItem.DropDownItems.Count;
             for (var i = 1; i < count; i++)
             {
-                filterTypeToolStripMenuItem.DropDownItems.RemoveAt(1);
+                var item = filterTypeToolStripMenuItem.DropDownItems[i];
+                if (item != endfieldVirtualPathsToolStripMenuItem && item.Tag as string != "virtual-path-filter")
+                {
+                    filterTypeToolStripMenuItem.DropDownItems.RemoveAt(i);
+                    i--;
+                    count--;
+                }
             }
 
             FMODreset();
@@ -1733,6 +2850,13 @@ namespace AnimeStudio.GUI
         {
             if (e.Button == MouseButtons.Right && assetListView.SelectedIndices.Count > 0)
             {
+                if (endfieldVirtualAssetListMode)
+                {
+                    tempClipboard = assetListView.HitTest(new Point(e.X, e.Y)).SubItem?.Text ?? string.Empty;
+                    copyToolStripMenuItem.Visible = true;
+                    contextMenuStrip1.Show(assetListView, e.X, e.Y);
+                    return;
+                }
                 goToSceneHierarchyToolStripMenuItem.Visible = false;
                 showOriginalFileToolStripMenuItem.Visible = false;
                 exportAnimatorwithselectedAnimationClipMenuItem.Visible = false;
@@ -2052,6 +3176,19 @@ namespace AnimeStudio.GUI
 
         private List<AssetItem> GetSelectedAssets()
         {
+            if (endfieldVirtualAssetListMode)
+            {
+                var loaded = new List<AssetItem>();
+                foreach (int index in assetListView.SelectedIndices)
+                {
+                    if (index < 0 || index >= endfieldVisibleAssetRecords.Count)
+                        continue;
+                    var asset = FindLoadedEndfieldAsset(endfieldVisibleAssetRecords[index]);
+                    if (asset != null && !loaded.Contains(asset))
+                        loaded.Add(asset);
+                }
+                return loaded;
+            }
             var selectedAssets = new List<AssetItem>(assetListView.SelectedIndices.Count);
             foreach (int index in assetListView.SelectedIndices)
             {
@@ -2061,8 +3198,52 @@ namespace AnimeStudio.GUI
             return selectedAssets;
         }
 
-        private void FilterAssetList()
+        private async void FilterAssetList()
         {
+            if (endfieldVirtualAssetListMode)
+            {
+                var generation = Interlocked.Increment(ref endfieldListOperationGeneration);
+                var query = listSearch.Text;
+                var selectedTypes = filterTypeToolStripMenuItem.DropDownItems
+                    .OfType<ToolStripMenuItem>()
+                    .Where(x => x.Tag as string == "endfield-asset-type" && x.Checked)
+                    .Select(x => x.Text)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var showAllTypes = allToolStripMenuItem.Checked;
+                Regex regex = null;
+                if (!string.IsNullOrWhiteSpace(query))
+                {
+                    try
+                    {
+                        regex = new Regex(query, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error("Invalid Regex.\n" + ex.Message);
+                        StatusStripUpdate($"Invalid search pattern: {ex.Message}");
+                        return;
+                    }
+                }
+
+                StatusStripUpdate($"Filtering {endfieldVirtualAssetRecords.Count:N0} assets...");
+                var filtered = await Task.Run(() => endfieldVirtualAssetRecords.Where(x =>
+                {
+                    if (!showAllTypes && !selectedTypes.Contains(x.Type))
+                        return false;
+                    return regex == null || regex.IsMatch(x.Name) || regex.IsMatch(x.Container) ||
+                        regex.IsMatch(x.Type) || regex.IsMatch(x.PathId.ToString()) || regex.IsMatch(x.Source);
+                }).ToList());
+                if (generation != endfieldListOperationGeneration || !endfieldVirtualAssetListMode)
+                    return;
+
+                assetListView.BeginUpdate();
+                assetListView.SelectedIndices.Clear();
+                endfieldVisibleAssetRecords = filtered;
+                assetListView.VirtualListSize = endfieldVisibleAssetRecords.Count;
+                assetListView.EndUpdate();
+                StatusStripUpdate($"Showing {endfieldVisibleAssetRecords.Count:N0} of {endfieldVirtualAssetRecords.Count:N0} virtual assets.");
+                return;
+            }
             assetListView.BeginUpdate();
             assetListView.SelectedIndices.Clear();
             var show = new List<ClassIDType>();
@@ -2070,8 +3251,7 @@ namespace AnimeStudio.GUI
             {
                 for (var i = 1; i < filterTypeToolStripMenuItem.DropDownItems.Count; i++)
                 {
-                    var item = (ToolStripMenuItem)filterTypeToolStripMenuItem.DropDownItems[i];
-                    if (item.Checked)
+                    if (filterTypeToolStripMenuItem.DropDownItems[i] is ToolStripMenuItem item && item != endfieldVirtualPathsToolStripMenuItem && item.Tag as string != "virtual-path-filter" && item.Checked)
                     {
                         show.Add((ClassIDType)Enum.Parse(typeof(ClassIDType), item.Text));
                     }
@@ -2122,6 +3302,34 @@ namespace AnimeStudio.GUI
 
         private async void ExportAssets(ExportFilter type, ExportType exportType)
         {
+            if (endfieldVirtualAssetListMode && exportType == ExportType.Eiem)
+            {
+                var records = type switch
+                {
+                    ExportFilter.All => endfieldVirtualAssetRecords,
+                    ExportFilter.Filtered => endfieldVisibleAssetRecords,
+                    ExportFilter.Selected => assetListView.SelectedIndices.Cast<int>()
+                        .Where(i => i >= 0 && i < endfieldVisibleAssetRecords.Count)
+                        .Select(i => endfieldVisibleAssetRecords[i]).ToList(),
+                    _ => new List<VirtualAssetRecord>()
+                };
+                if (records.Count == 0)
+                {
+                    StatusStripUpdate("No virtual assets selected for EIEM export");
+                    return;
+                }
+                var virtualFolderDialog = new OpenFolderDialog
+                {
+                    InitialFolder = saveDirectoryBackup,
+                    Title = "Select EIEM export folder"
+                };
+                if (virtualFolderDialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+                timer.Stop();
+                saveDirectoryBackup = virtualFolderDialog.Folder;
+                await ExportEndfieldVirtualAssets(records, virtualFolderDialog.Folder);
+                return;
+            }
             if (exportableAssets.Count > 0)
             {
                 var saveFolderDialog = new OpenFolderDialog();
@@ -2150,6 +3358,96 @@ namespace AnimeStudio.GUI
             {
                 StatusStripUpdate("No exportable assets loaded");
             }
+        }
+
+        private List<VirtualAssetFile> GetCheckedEndfieldPrefabFiles()
+        {
+            var result = new List<VirtualAssetFile>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            void Visit(TreeNodeCollection nodes)
+            {
+                foreach (TreeNode node in nodes)
+                {
+                    if (node.Checked && node.Tag is VirtualAssetFile file && file.IsPrefab &&
+                        seen.Add(file.Container))
+                        result.Add(file);
+                    if (node.Nodes.Count > 0)
+                        Visit(node.Nodes);
+                }
+            }
+            Visit(sceneTreeView.Nodes);
+            return result;
+        }
+
+        private async Task ExportCheckedEndfieldPrefabsAsync(bool includeResources)
+        {
+            var files = GetCheckedEndfieldPrefabFiles();
+            if (files.Count == 0)
+            {
+                const string message = "No .prefab file is checked. The EIEM package exporter only accepts logical .prefab files; character-data .asset files are not Prefabs.\n\nCheck chr_0028_wulfa_postmodel.prefab, then run this command again.";
+                StatusStripUpdate(message);
+                MessageBox.Show(this, message, "EIEM Prefab export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var folder = new OpenFolderDialog
+            {
+                InitialFolder = saveDirectoryBackup,
+                Title = includeResources
+                    ? "Export Prefab as EIEM mod package"
+                    : "Export Prefab structure"
+            };
+            if (folder.ShowDialog(this) != DialogResult.OK)
+                return;
+            saveDirectoryBackup = folder.Folder;
+
+            StatusStripUpdate(includeResources
+                ? $"Exporting {files.Count:N0} checked Prefab(s) as EIEM mod packages..."
+                : $"Exporting {files.Count:N0} checked Prefab(s)...");
+            var exported = 0;
+            foreach (var file in files)
+            {
+                var root = await PreviewEndfieldPrefabAsync(file);
+                if (root != null && await Task.Run(() =>
+                        Exporter.ExportEndfieldPrefab(file, root, folder.Folder, includeResources,
+                            endfieldVirtualAssetRecords.ToArray(), endfieldDependencyIndex)))
+                    exported++;
+                StatusStripUpdate($"Prefab export: {exported}/{files.Count} completed");
+            }
+            StatusStripUpdate($"Finished Prefab export: {exported}/{files.Count} completed");
+            if (exported > 0 && Properties.Settings.Default.openAfterExport)
+                Studio.OpenFolderInExplorer(folder.Folder);
+        }
+
+        private async Task ExportEndfieldVirtualAssets(List<VirtualAssetRecord> records, string output)
+        {
+            var exported = 0;
+            var skipped = 0;
+            foreach (var batch in records.GroupBy(x => x.Source, StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    await PreviewEndfieldAssetAsync(batch.First());
+                    foreach (var record in batch)
+                    {
+                        var item = FindLoadedEndfieldAsset(record);
+                        if (item == null || !Exporter.ExportEiemFile(item,
+                                BuildEiemJsonExportPath(output, record), record.Source, record.Container))
+                            skipped++;
+                        else
+                            exported++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    skipped += batch.Count();
+                    Logger.Error($"EIEM virtual export failed for {batch.Key}: {ex.Message}");
+                }
+                StatusStripUpdate($"EIEM export: {exported} exported, {skipped} skipped.");
+            }
+            StatusStripUpdate($"Finished EIEM export: {exported} exported, {skipped} skipped.");
+            if (exported > 0 && Properties.Settings.Default.openAfterExport)
+                Studio.OpenFolderInExplorer(output);
         }
 
         private void ExportAssetsList(ExportFilter type)
@@ -2642,6 +3940,7 @@ namespace AnimeStudio.GUI
         private void abortStripMenuItem_Click(object sender, EventArgs e)
         {
             Logger.Info("Aborting....");
+            endfieldIndexCancellation.Cancel();
             assetsManager.tokenSource.Cancel();
             AssetsHelper.tokenSource.Cancel();
         }

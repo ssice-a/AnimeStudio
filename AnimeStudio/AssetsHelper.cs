@@ -17,6 +17,9 @@ namespace AnimeStudio
 {
     public static class AssetsHelper
     {
+        public sealed record BundleDependencyEntry(string Name, string[] Dependencies);
+        public sealed record BundleIndexResult(List<AssetEntry> Assets, List<BundleDependencyEntry> Files);
+
         public const string MapName = "Maps";
 
         public static bool Minimal = true;
@@ -522,6 +525,51 @@ namespace AnimeStudio
 
         private static void BuildAssetMap(string file, List<AssetEntry> assets, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
         {
+            BuildAssetMap(file, assets, typeFilters, nameFilters, containerFilters, includeHash: true);
+        }
+
+        /// <summary>
+        /// Parse one already-decrypted logical Bundle directly from memory and return the
+        /// resource-index entries required by the VFS browser. Loaded streams are released
+        /// before returning, so peak memory is bounded by the current Bundle.
+        /// </summary>
+        public static List<AssetEntry> BuildAssetMapFromStream(Stream payload, string logicalPath, Game game)
+            => BuildBundleIndexFromStream(payload, logicalPath, game).Assets;
+
+        /// <summary>
+        /// Parse one decrypted Bundle and return both its visible resources and the internal
+        /// CAB dependency metadata needed to load Prefab/Mesh/Avatar references on demand.
+        /// </summary>
+        public static BundleIndexResult BuildBundleIndexFromStream(Stream payload, string logicalPath, Game game)
+        {
+            var result = new List<AssetEntry>();
+            var files = new List<BundleDependencyEntry>();
+            assetsManager.Clear();
+            assetsManager.Game = game;
+            try
+            {
+                assetsManager.LoadStream(logicalPath, payload);
+                if (assetsManager.assetsFileList.Count > 0)
+                {
+                    BuildAssetMap(logicalPath, result, null, null, null, includeHash: false);
+                    files.AddRange(assetsManager.assetsFileList.Select(file =>
+                        new BundleDependencyEntry(file.fileName,
+                            file.m_Externals.Select(x => x.fileName)
+                                .Where(x => !string.IsNullOrWhiteSpace(x))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToArray())));
+                }
+                return new BundleIndexResult(result, files);
+            }
+            finally
+            {
+                assetsManager.Clear();
+                StringCache.Clear();
+            }
+        }
+
+        private static void BuildAssetMap(string file, List<AssetEntry> assets, ClassIDType[] typeFilters, Regex[] nameFilters, Regex[] containerFilters, bool includeHash)
+        {
             var matches = new List<AssetEntry>();
             var containers = new List<(PPtr<Object>, string)>();
             var mihoyoBinDataNames = new List<(PPtr<Object>, string)>();
@@ -672,9 +720,11 @@ namespace AnimeStudio
                         // shaders/meshes): streaming hash is correct but pointless for map
                         // identity when the raw payload dwarfs the rest of the entry.
                         const uint largeHashSkip = 16u * 1024 * 1024;
-                        asset.Hash = hashSource.byteSize >= largeHashSkip
-                            ? $"size:{hashSource.byteSize:x}"
-                            : hashSource.GetHash();
+                        asset.Hash = includeHash
+                            ? hashSource.byteSize >= largeHashSkip
+                                ? $"size:{hashSource.byteSize:x}"
+                                : hashSource.GetHash()
+                            : string.Empty;
                         matches.Add(asset);
                     }
                 }
