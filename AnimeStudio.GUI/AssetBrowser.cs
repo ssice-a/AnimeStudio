@@ -208,7 +208,7 @@ namespace AnimeStudio.GUI
                 Logger.Info("Loading...");
                 bringMainToFront();
                 _parent.Invoke(() => _parent.updateGame(ResourceMap.GetGameType()));
-                _parent.Invoke(() => _parent.LoadPaths(files, filePaths.ToArray()));
+                _parent.Invoke(() => _parent.LoadIndexedPaths(files, filePaths.ToArray()));
             }
         }
         private async void exportSelected_Click(object sender, EventArgs e)
@@ -224,26 +224,36 @@ namespace AnimeStudio.GUI
                 var statusStripUpdate = StatusStripUpdate;
                 assetsManager.Game = Studio.Game;
                 StatusStripUpdate = Logger.Info;
+                var previousResolveDependencies = assetsManager.ResolveDependencies;
+                assetsManager.ResolveDependencies = true;
+                assetsManager.FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
 
                 var files = new List<string>(entries.Select(x => x.Source).ToHashSet());
-                await Task.Run(async () =>
+                try
                 {
-                    for (int i = 0; i < files.Count; i++)
+                    await Task.Run(async () =>
                     {
-                        var toExportAssets = new List<AssetItem>();
-
-                        var file = files[i];
-                        assetsManager.LoadFiles(file);
-                        if (assetsManager.assetsFileList.Count > 0)
+                        for (int i = 0; i < files.Count; i++)
                         {
-                            BuildAssetData(toExportAssets, entries);
-                            await ExportAssets(saveFolderDialog.Folder, toExportAssets, ExportType.Convert, i == files.Count - 1);
+                            var toExportAssets = new List<AssetItem>();
+
+                            var file = files[i];
+                            assetsManager.LoadFiles(file);
+                            if (assetsManager.assetsFileList.Count > 0)
+                            {
+                                BuildAssetData(toExportAssets, entries);
+                                await ExportAssets(saveFolderDialog.Folder, toExportAssets, ExportType.Convert, i == files.Count - 1);
+                            }
+                            toExportAssets.Clear();
+                            assetsManager.Clear();
                         }
-                        toExportAssets.Clear();
-                        assetsManager.Clear();
-                    }
-                });
-                StatusStripUpdate = statusStripUpdate;
+                    });
+                }
+                finally
+                {
+                    assetsManager.ResolveDependencies = previousResolveDependencies;
+                    StatusStripUpdate = statusStripUpdate;
+                }
             }
         }
         private void BuildAssetData(List<AssetItem> exportableAssets, AssetEntry[] entries)

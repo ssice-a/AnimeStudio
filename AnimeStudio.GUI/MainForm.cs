@@ -1086,16 +1086,28 @@ namespace AnimeStudio.GUI
 
         public async void LoadPaths(List<AssetFilterDataItem> filterData, params string[] paths)
         {
+            await LoadPathsCore(filterData, enableResolveDependencies.Checked, paths);
+        }
+
+        internal async void LoadIndexedPaths(List<AssetFilterDataItem> filterData, params string[] paths)
+        {
+            await LoadPathsCore(filterData, resolveDependencies: true, paths);
+        }
+
+        private async Task LoadPathsCore(List<AssetFilterDataItem> filterData,
+            bool resolveDependencies, params string[] paths)
+        {
             long totalSize = GetTotalSize(paths);
             if (!SizeWarning(totalSize)) return;
 
             ResetForm();
             assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
             assetsManager.Game = Studio.Game;
-            if (filterData != null)
+            assetsManager.ResolveDependencies = resolveDependencies;
+            assetsManager.FilterData = new AssetFilterData
             {
-                assetsManager.FilterData = new AssetFilterData { Items = filterData };
-            }
+                Items = filterData ?? new List<AssetFilterDataItem>()
+            };
             if (paths.Length == 1 && Directory.Exists(paths[0]))
             {
                 await Task.Run(() => assetsManager.LoadFolder(paths[0]));
@@ -1117,6 +1129,7 @@ namespace AnimeStudio.GUI
                 openDirectoryBackup = Path.GetDirectoryName(paths[0]);
                 assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
                 assetsManager.Game = Studio.Game;
+                assetsManager.FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
                 if (paths.Length == 1 && File.Exists(paths[0]) && Path.GetExtension(paths[0]) == ".txt")
                 {
                     paths = File.ReadAllLines(paths[0]);
@@ -1246,6 +1259,7 @@ namespace AnimeStudio.GUI
             ResetForm();
             assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
             assetsManager.Game = Studio.Game;
+            assetsManager.FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
             await Task.Run(() => assetsManager.LoadFolder(openFolderDialog.Folder));
             BuildAssetStructures();
         }
