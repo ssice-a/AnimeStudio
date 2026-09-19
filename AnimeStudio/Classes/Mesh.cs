@@ -932,8 +932,8 @@ namespace AnimeStudio
                         float[] componentsFloatArray = null;
                         if (reader.Game.Type.IsArknightsEndfieldGroup() && chn == 1 && m_Channel.dimension == 1)
                         {
-                            //componentsFloatArray = MeshHelper.BytesToFloatArray(componentBytes, vertexFormat);
-                            componentsFloatArray = MeshHelper.DecompressEndfieldNormal(componentBytes, vertexFormat);
+                            MeshHelper.DecompressEndfieldFrame(componentBytes, vertexFormat,
+                                out componentsFloatArray, out m_Tangents);
                         }
                         else
                         {
@@ -1581,68 +1581,54 @@ namespace AnimeStudio
             return result;
         }
 
-        // From: https://github.com/Hororiya/YarikStudio/blob/main/AssetStudio/Classes/Mesh.cs#L1535
-        public static float[] DecompressEndfieldNormal(byte[] inputBytes, VertexFormat format) // 8bits per component
+        // Endfield's scalar NORMAL stores a complete tangent frame in its raw
+        // float32 bits, not a numeric float normal. Decode the source frame;
+        // recalculating from UVs is not equivalent to recovering authored data.
+        // See EIEM docs/vertex-data-contract.md for shader evidence and limits.
+        public static void DecompressEndfieldFrame(byte[] inputBytes, VertexFormat format,
+            out float[] normals, out float[] tangents)
         {
-            var size = GetFormatSize(format);
-            var len = inputBytes.Length / size;
-            var result = new float[len * 3];
-            var readFloat = new float[len];
-            readFloat = BytesToFloatArray(inputBytes, format);
-
-            for (int i = 0; i < len; i++)
+            if (format != VertexFormat.Float || inputBytes.Length % 4 != 0)
+                throw new InvalidDataException("Endfield packed NORMAL requires complete float32 words.");
+            int count = inputBytes.Length / 4;
+            normals = new float[count * 3];
+            tangents = new float[count * 4];
+            for (int i = 0; i < count; i++)
             {
-                float value = readFloat[i];
+                uint word = BinaryPrimitives.ReadUInt32LittleEndian(inputBytes.AsSpan(i * 4, 4));
+                if ((word & 0x40000000u) == 0)
+                    throw new InvalidDataException($"Endfield scalar NORMAL vertex {i} has no packed-frame flag.");
 
-                float r0x = BitConverter.ToInt32(BitConverter.GetBytes(value)) & 0x40000000;
-                r0x = (BitConverter.ToUInt32(BitConverter.GetBytes(r0x)) > 0) ? 1.0f : 0.0f;
-
-                // (((int3)v2.xxx << (32 - int3(10,10,10) - int3(0,10,20))) >> (32 - int3(10,10,10)))
-                float r0y = (BitConverter.ToInt32(BitConverter.GetBytes(value)) << 22) >> 22;
-                float r0z = (BitConverter.ToInt32(BitConverter.GetBytes(value)) << 12) >> 22;
-                float r0w = (BitConverter.ToInt32(BitConverter.GetBytes(value)) << 2) >> 22;
-
-                float r1x = (BitConverter.ToUInt32(BitConverter.GetBytes(value))) >> 31;
-
-                float r1y = 0.00195694715f * r0y;
-                float r1z = 0.00195694715f * r0z;
-                float r1w = 0.00195694715f * r0w;
-
-                float leng = r1x * r1x + r1y * r1y + r1z * r1z + r1w * r1w;
-
-                float r2x = 1.0f - Math.Abs(r1y);
-                float r2y = 1.0f - Math.Abs(r1z);
-                float r2z = 1.0f - Math.Abs(r1y);
-
-                float r3z = r2x - Math.Abs(r1z);
-
-                r2x = r3z < 0.0f ? 1.0f : 0.0f;
-
-                r0y = r0y >= 0.0f ? 1.0f : 0.0f;
-                r0z = r0z >= 0.0f ? 1.0f : 0.0f;
-
-                r0y = r0y * 2.0f - 1.0f;
-                r0z = r0z * 2.0f - 1.0f;
-
-                r0y = r2y * r0y;
-                r0z = r2z * r0z;
-
-                float r3x = (r2x == 1.0f) ? r0y : r1y;
-                float r3y = (r2x == 1.0f) ? r0z : r1z;
-
-                r0y = r3x * r3x + r3y * r3y + r3z * r3z;
-                r0y = 1.0f / (float)Math.Sqrt(r0y);
-
-                r2x = r3x * r0y;
-                r2y = r3y * r0y;
-                r2z = r3z * r0y;
-
-                // 计算result[i * 3]的值
-                result[i * 3] = r2x;
-                result[i * 3 + 1] = r2y;
-                result[i * 3 + 2] = r2z;
+                // Signed 10-bit octahedral normal and diamond tangent angle.
+                int bits = unchecked((int)word);
+                float x = (bits << 22 >> 22) / 511f;
+                float y = (bits << 12 >> 22) / 511f;
+                float angle = (bits << 2 >> 22) / 511f;
+                float z = 1f - MathF.Abs(x) - MathF.Abs(y);
+                if (z < 0f)
+                {
+                    float oldX = x;
+                    x = (1f - MathF.Abs(y)) * (x >= 0f ? 1f : -1f);
+                    y = (1f - MathF.Abs(oldX)) * (y >= 0f ? 1f : -1f);
+                }
+                var n = System.Numerics.Vector3.Normalize(new System.Numerics.Vector3(x, y, z));
+                var seed = new System.Numerics.Vector3(n.Y - n.Z, n.Z - n.X, n.X - n.Y);
+                var t0 = System.Numerics.Vector3.Normalize(seed - System.Numerics.Vector3.Dot(seed, n) * n);
+                var b0 = System.Numerics.Vector3.Normalize(System.Numerics.Vector3.Cross(n, t0));
+                float dx = 1f - 2f * MathF.Abs(angle);
+                float dy = (1f - MathF.Abs(dx)) * (angle < 0f ? -1f : 1f);
+                float inverseLength = 1f / MathF.Sqrt(dx * dx + dy * dy);
+                var t = (dx * t0 + dy * b0) * inverseLength;
+                if (!float.IsFinite(t.X) || !float.IsFinite(t.Y) || !float.IsFinite(t.Z))
+                    throw new InvalidDataException($"Endfield packed frame is degenerate at vertex {i}.");
+                normals[i * 3] = n.X;
+                normals[i * 3 + 1] = n.Y;
+                normals[i * 3 + 2] = n.Z;
+                tangents[i * 4] = t.X;
+                tangents[i * 4 + 1] = t.Y;
+                tangents[i * 4 + 2] = t.Z;
+                tangents[i * 4 + 3] = (word >> 31) == 0 ? -1f : 1f;
             }
-            return result;
         }
     }
 }

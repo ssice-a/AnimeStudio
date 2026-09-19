@@ -3410,7 +3410,8 @@ namespace AnimeStudio.GUI
                 var root = await PreviewEndfieldPrefabAsync(file);
                 if (root != null && await Task.Run(() =>
                         Exporter.ExportEndfieldPrefab(file, root, folder.Folder, includeResources,
-                            endfieldVirtualAssetRecords.ToArray(), endfieldDependencyIndex)))
+                            endfieldVirtualAssetRecords.ToArray(), endfieldDependencyIndex,
+                            endfieldVfsArchive?.Fingerprint)))
                     exported++;
                 StatusStripUpdate($"Prefab export: {exported}/{files.Count} completed");
             }

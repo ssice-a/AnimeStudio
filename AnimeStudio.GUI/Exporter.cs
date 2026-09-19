@@ -606,7 +606,7 @@ namespace AnimeStudio.GUI
         /// </summary>
         internal static bool ExportEndfieldPrefab(VirtualAssetFile file, GameObject root,
             string outputRoot, bool includeResources, IReadOnlyList<VirtualAssetRecord> assetRecords,
-            EndfieldBundleDependencyIndex dependencies)
+            EndfieldBundleDependencyIndex dependencies, string vfsFingerprint = null)
         {
             if (file == null || root == null || string.IsNullOrWhiteSpace(outputRoot))
                 return false;
@@ -630,7 +630,8 @@ namespace AnimeStudio.GUI
 
                 var packageFolder = Path.Combine(Path.GetDirectoryName(structurePath)!,
                     Path.GetFileNameWithoutExtension(file.Name) + ".eiem");
-                return new EiemPackageWriter(assetRecords, dependencies).Write(file, root, packageFolder);
+                return new EiemPackageWriter(assetRecords, dependencies, vfsFingerprint)
+                    .Write(file, root, packageFolder);
             }
             catch (Exception ex)
             {
