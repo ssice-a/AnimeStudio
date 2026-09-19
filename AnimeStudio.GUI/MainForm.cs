@@ -1133,16 +1133,121 @@ namespace AnimeStudio.GUI
             if (openFolderDialog.ShowDialog(this) == DialogResult.OK)
             {
                 openDirectoryBackup = openFolderDialog.Folder;
+                var folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(openDirectoryBackup));
+                var invalid = Path.GetInvalidFileNameChars();
+                var safeFolderName = new string((string.IsNullOrWhiteSpace(folderName) ? "assets" : folderName)
+                    .Select(character => invalid.Contains(character) ? '_' : character).ToArray());
+                var saveFileDialog = new SaveFileDialog
+                {
+                    Filter = "MessagePack AssetMap File|*.map",
+                    DefaultExt = "map",
+                    AddExtension = true,
+                    OverwritePrompt = false,
+                    Title = "Select the compact lazy-load index file",
+                    InitialDirectory = saveDirectoryBackup,
+                    FileName = $"{safeFolderName}-{Studio.Game.Type}.map"
+                };
+                if (saveFileDialog.ShowDialog(this) != DialogResult.OK)
+                    return;
 
-                long totalSize = GetFolderSize(openDirectoryBackup);
-                if (!SizeWarning(totalSize)) return;
+                var mapPath = Path.GetFullPath(saveFileDialog.FileName);
+                var cabMapPath = mapPath + ".cabmap";
+                var buildMap = true;
+                if (File.Exists(mapPath) && File.Exists(cabMapPath))
+                {
+                    var reuse = MessageBox.Show(this,
+                        "Use the existing asset index? Choose No to rebuild it from the selected folder.",
+                        "Lazy folder loading", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                    if (reuse == DialogResult.Cancel)
+                        return;
+                    buildMap = reuse == DialogResult.No;
+                }
 
-                ResetForm();
-                assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
-                assetsManager.Game = Studio.Game;
-                await Task.Run(() => assetsManager.LoadFolder(openFolderDialog.Folder));
-                BuildAssetStructures();
+                try
+                {
+                    loadFolderToolStripMenuItem.Enabled = false;
+                    saveDirectoryBackup = Path.GetDirectoryName(mapPath) ?? saveDirectoryBackup;
+                    if (buildMap)
+                    {
+                        StatusStripUpdate("Scanning source files for the lazy-load index...");
+                        var files = await Task.Run(() => Directory
+                            .EnumerateFiles(openDirectoryBackup, "*", SearchOption.AllDirectories)
+                            .ToArray());
+                        if (files.Length == 0)
+                            throw new InvalidDataException("The selected folder contains no files.");
+
+                        var mapDirectory = Path.GetDirectoryName(mapPath) ?? Environment.CurrentDirectory;
+                        var mapName = Path.GetFileNameWithoutExtension(mapPath);
+                        var buildSuffix = $"building-{Guid.NewGuid():N}";
+                        var stagedMapName = $"{mapName}.{buildSuffix}";
+                        var stagedMapPath = Path.Combine(mapDirectory, stagedMapName + ".map");
+                        var stagedCabMapPath = cabMapPath + "." + buildSuffix;
+                        AssetsHelper.SetUnityVersion(specifyUnityVersion.Text);
+                        try
+                        {
+                            await AssetsHelper.BuildBoth(files, stagedMapName, openDirectoryBackup,
+                                Studio.Game, mapDirectory, ExportListType.MessagePack,
+                                cabMapPath: stagedCabMapPath);
+                            if (!File.Exists(stagedMapPath) || !File.Exists(stagedCabMapPath))
+                                throw new InvalidDataException("The lazy-load asset and dependency indexes could not be created.");
+                            File.Move(stagedMapPath, mapPath, true);
+                            File.Move(stagedCabMapPath, cabMapPath, true);
+                        }
+                        finally
+                        {
+                            if (File.Exists(stagedMapPath))
+                                File.Delete(stagedMapPath);
+                            if (File.Exists(stagedCabMapPath))
+                                File.Delete(stagedCabMapPath);
+                        }
+                    }
+
+                    if (!AssetsHelper.LoadCABMap(cabMapPath))
+                        throw new InvalidDataException("The lazy-load dependency index could not be opened.");
+
+                    assetBrowser?.Close();
+                    assetBrowser = new AssetBrowser(this);
+                    if (!await assetBrowser.LoadMapAsync(mapPath))
+                    {
+                        assetBrowser.Dispose();
+                        assetBrowser = null;
+                        throw new InvalidDataException("The lazy-load asset index could not be opened.");
+                    }
+                    assetBrowser.Show(this);
+                    StatusStripUpdate("Lazy folder index ready. Select assets to load only their source bundles.");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Lazy folder loading failed: {ex}");
+                    MessageBox.Show(this, ex.Message, "Lazy folder loading",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally
+                {
+                    loadFolderToolStripMenuItem.Enabled = true;
+                }
             }
+        }
+
+        private async void loadFolderFully_Click(object sender, EventArgs e)
+        {
+            var openFolderDialog = new OpenFolderDialog
+            {
+                InitialFolder = openDirectoryBackup
+            };
+            if (openFolderDialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            openDirectoryBackup = openFolderDialog.Folder;
+            var totalSize = GetFolderSize(openDirectoryBackup);
+            if (!SizeWarning(totalSize))
+                return;
+
+            ResetForm();
+            assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+            assetsManager.Game = Studio.Game;
+            await Task.Run(() => assetsManager.LoadFolder(openFolderDialog.Folder));
+            BuildAssetStructures();
         }
 
         private async void extractFileToolStripMenuItem_Click(object sender, EventArgs e)

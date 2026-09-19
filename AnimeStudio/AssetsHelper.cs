@@ -282,14 +282,14 @@ namespace AnimeStudio
             }
         }
 
-        private static void DumpCABMap(string mapName)
+        private static void DumpCABMap(string mapName, string outputPath = null)
         {
             CABMap = CABMap.OrderBy(pair => pair.Key).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-            var outputFile = Path.Combine(MapName, $"{mapName}.bin");
+            var outputFile = outputPath ?? Path.Combine(MapName, $"{mapName}.bin");
 
-            Directory.CreateDirectory(Path.GetDirectoryName(outputFile));
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputFile)));
 
-            using (var binaryFile = File.OpenWrite(outputFile))
+            using (var binaryFile = new FileStream(outputFile, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var writer = new BinaryWriter(binaryFile))
             {
                 writer.Write(BaseFolder);
@@ -426,7 +426,9 @@ namespace AnimeStudio
             {
                 if (exportListType.HasFlag(ExportListType.MessagePack))
                 {
-                    tempEntriesPath = Path.Combine(Path.GetTempPath(), $"animestudio-map-{Guid.NewGuid():N}.tmp");
+                    // Keep the temporary stream beside the requested index. Large maps should
+                    // consume the workspace chosen by the user, not an unrelated system drive.
+                    tempEntriesPath = Path.Combine(savePath, $".{mapName}-{Guid.NewGuid():N}.tmp");
                     tempEntries = new FileStream(tempEntriesPath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 64, FileOptions.SequentialScan);
                     mapPath = Path.Combine(savePath, $"{mapName}.map");
                 }
@@ -953,7 +955,7 @@ namespace AnimeStudio
                 }
             });
         }
-        public static async Task BuildBoth(string[] files, string mapName, string baseFolder, Game game, string savePath, ExportListType exportListType, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null)
+        public static async Task BuildBoth(string[] files, string mapName, string baseFolder, Game game, string savePath, ExportListType exportListType, ClassIDType[] typeFilters = null, Regex[] nameFilters = null, Regex[] containerFilters = null, string cabMapPath = null)
         {
             Logger.Info($"Building Both...");
             try
@@ -973,7 +975,7 @@ namespace AnimeStudio
                         BuildAssetMap(file, assets, typeFilters, nameFilters, containerFilters);
                     });
                     UpdateContainers(assets, game);
-                    DumpCABMap(mapName);
+                    DumpCABMap(mapName, cabMapPath);
                     Logger.Info($"Map build successfully !! {collision} collisions found");
                     await ExportAssetsMap(assets, game, mapName, savePath, exportListType);
                 }
@@ -996,7 +998,9 @@ namespace AnimeStudio
                         {
                             if (exportListType.HasFlag(ExportListType.MessagePack))
                             {
-                                tempEntriesPath = Path.Combine(Path.GetTempPath(), $"animestudio-map-{Guid.NewGuid():N}.tmp");
+                                // Keep all potentially large index files on the workspace drive
+                                // selected by the user instead of silently filling the system drive.
+                                tempEntriesPath = Path.Combine(savePath, $".{mapName}-{Guid.NewGuid():N}.tmp");
                                 tempEntries = new FileStream(tempEntriesPath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 64, FileOptions.SequentialScan);
                                 mapPath = Path.Combine(savePath, $"{mapName}.map");
                             }
@@ -1039,7 +1043,7 @@ namespace AnimeStudio
                                 }
                             });
 
-                            DumpCABMap(mapName);
+                            DumpCABMap(mapName, cabMapPath);
 
                             if (xmlWriter != null)
                             {

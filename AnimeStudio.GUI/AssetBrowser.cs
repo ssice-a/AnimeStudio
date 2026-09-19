@@ -47,30 +47,31 @@ namespace AnimeStudio.GUI
             var openFileDialog = new OpenFileDialog() { Multiselect = false, Filter = "MessagePack AssetMap File|*.map|JSON AssetMap File|*.json" };
             if (openFileDialog.ShowDialog(this) == DialogResult.OK)
             {
-                try
-                {
-                    var path = openFileDialog.FileName;
-                    Logger.Info($"Loading AssetMap...");
-                    var result = await Task.Run(() => ResourceMap.FromFile(path));
-
-                    if (result == -1)
-                    {
-                        throw new Exception("Map parse failed");
-                    }
-
-                    _sortedColumn = null;
-
-                    _firstAssetEntries.Clear();
-                    _firstAssetEntries.AddRange(ResourceMap.GetEntries());
-
-                    updateDisplay();
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Failed to load map : {ex.ToString()}");
-                }
+                await LoadMapAsync(openFileDialog.FileName);
             }
             loadAssetMap.Enabled = true;
+        }
+
+        public async Task<bool> LoadMapAsync(string path)
+        {
+            try
+            {
+                Logger.Info("Loading AssetMap...");
+                var result = await Task.Run(() => ResourceMap.FromFile(path));
+                if (result == -1)
+                    throw new Exception("Map parse failed");
+
+                _sortedColumn = null;
+                _firstAssetEntries.Clear();
+                _firstAssetEntries.AddRange(ResourceMap.GetEntries());
+                updateDisplay();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to load map: {ex}");
+                return false;
+            }
         }
 
         private void updateDisplay()
