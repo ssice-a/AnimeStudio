@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and release
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -13,13 +22,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Verify release tag matches application version
         shell: pwsh
         run: |
           [xml]$props = Get-Content Directory.Build.props
           $version = 'v' + $props.Project.PropertyGroup.Version
-          if ($version -ne '${{ github.ref_name }}') {
-            throw "Tag ${{ github.ref_name }} does not match AnimeStudio $version"
+          git show-ref --verify --quiet "refs/tags/$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw "Missing tag $env:RELEASE_TAG" }
+          if ($version -ne $env:RELEASE_TAG) {
+            throw "Tag $env:RELEASE_TAG does not match AnimeStudio $version"
           }
       - uses: actions/setup-dotnet@v4
         with:
@@ -35,9 +48,10 @@ jobs:
           foreach ($framework in 'net9.0-windows', 'net10.0-windows') {
             $source = Join-Path dist $framework
             if (-not (Test-Path $source)) { throw "Missing $source" }
-            Compress-Archive -Path "$source/*" -DestinationPath "AnimeStudio_${{ github.ref_name }}_$framework.zip"
+            Compress-Archive -Path "$source/*" -DestinationPath "AnimeStudio_$($env:RELEASE_TAG)_$framework.zip"
           }
       - uses: softprops/action-gh-release@v2
         with:
-          files: AnimeStudio_${{ github.ref_name }}_*.zip
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: AnimeStudio_${{ env.RELEASE_TAG }}_*.zip
           generate_release_notes: true
