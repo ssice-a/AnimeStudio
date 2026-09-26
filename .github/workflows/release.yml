@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release tag matches application version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content Directory.Build.props
+          $version = 'v' + $props.Project.PropertyGroup.Version
+          if ($version -ne '${{ github.ref_name }}') {
+            throw "Tag ${{ github.ref_name }} does not match AnimeStudio $version"
+          }
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+      - name: Build and package GUI and CLI
+        shell: pwsh
+        run: ./build.ps1
+      - name: Archive both supported frameworks
+        shell: pwsh
+        run: |
+          foreach ($framework in 'net9.0-windows', 'net10.0-windows') {
+            $source = Join-Path dist $framework
+            if (-not (Test-Path $source)) { throw "Missing $source" }
+            Compress-Archive -Path "$source/*" -DestinationPath "AnimeStudio_${{ github.ref_name }}_$framework.zip"
+          }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: AnimeStudio_${{ github.ref_name }}_*.zip
+          generate_release_notes: true

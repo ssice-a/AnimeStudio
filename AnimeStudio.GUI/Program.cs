@@ -22,7 +22,10 @@ namespace AnimeStudio.GUI
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            var main = new MainForm();
+            main.Shown += async (_, __) =>
+                await ReleaseUpdateChecker.CheckAndPromptAsync(main, manual: false);
+            Application.Run(main);
         }
     }
 }

@@ -112,7 +112,7 @@ namespace AnimeStudio.GUI
         private VirtualAssetPathIndex endfieldVirtualPathIndex;
         private EndfieldBundleDependencyIndex endfieldDependencyIndex;
         private EndfieldVfsArchive endfieldVfsArchive;
-        private readonly List<VirtualAssetRecord> endfieldVirtualAssetRecords = new();
+        private List<VirtualAssetRecord> endfieldVirtualAssetRecords = new();
         private List<VirtualAssetRecord> endfieldVisibleAssetRecords = new();
         private readonly Dictionary<string, AssetItem> endfieldLoadedAssetLookup = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, AnimeStudio.Object> endfieldLoadedObjectLookup = new(StringComparer.OrdinalIgnoreCase);
@@ -121,6 +121,7 @@ namespace AnimeStudio.GUI
         private CancellationTokenSource endfieldIndexCancellation = new();
         private int endfieldListOperationGeneration;
         private bool endfieldVirtualAssetListMode;
+        private bool indexedFileSourceMode;
         private string endfieldVirtualMapPath = string.Empty;
         private string endfieldWorkspace = string.Empty;
         private List<TreeNode> endfieldOriginalSceneNodes;
@@ -141,10 +142,10 @@ namespace AnimeStudio.GUI
             endfieldVirtualPathsToolStripMenuItem = new ToolStripMenuItem
             {
                 Name = "endfieldVirtualPathsToolStripMenuItem",
-                Text = "Unified VFS Paths (Endfield)",
+                Text = "Logical Asset Paths",
                 CheckOnClick = true,
                 Tag = "virtual-path-filter",
-                ToolTipText = "Merge Endfield AssetMap containers into the Scene Hierarchy view"
+                ToolTipText = "Show AssetBundle container paths in the Scene Hierarchy view"
             };
             endfieldVirtualPathsToolStripMenuItem.Click += endfieldVirtualPathsToolStripMenuItem_Click;
             filterTypeToolStripMenuItem.DropDownItems.Add(new ToolStripSeparator { Tag = "virtual-path-filter" });
@@ -238,10 +239,10 @@ namespace AnimeStudio.GUI
                         skipped += batch.Count();
                         continue;
                     }
-                    await PreviewEndfieldAssetAsync(first.Record);
+                    await PreviewVirtualAssetAsync(first.Record);
                     foreach (var selection in batch)
                     {
-                        var item = FindLoadedEndfieldAsset(selection.Record);
+                        var item = FindLoadedVirtualAsset(selection.Record);
                         if (item == null || !Exporter.ExportEiemFile(item,
                                 BuildEiemJsonExportPath(folder.Folder, selection.Record),
                                 selection.Record.Source, selection.Record.Container))
@@ -577,7 +578,7 @@ namespace AnimeStudio.GUI
                 endfieldVfsArchive = archive;
                 endfieldDependencyIndex = dependencyIndex;
                 endfieldWorkspace = workspace;
-                ActivateEndfieldVirtualIndex(assetIndex, mapPath);
+                ActivateVirtualAssetIndex(assetIndex, mapPath);
                 Studio.Game = game;
                 assetsManager.Game = Studio.Game;
                 assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
@@ -638,7 +639,7 @@ namespace AnimeStudio.GUI
                 Interlocked.Increment(ref endfieldListOperationGeneration);
                 sceneTreeView.Nodes.Clear();
                 endfieldVirtualAssetListMode = false;
-                endfieldVisibleAssetRecords.Clear();
+                endfieldVisibleAssetRecords = new List<VirtualAssetRecord>();
                 assetListView.VirtualListSize = visibleAssets.Count;
                 assetListView.Refresh();
                 if (endfieldOriginalSceneNodes != null)
@@ -653,7 +654,7 @@ namespace AnimeStudio.GUI
             if (endfieldVirtualPathIndex != null)
             {
                 endfieldVirtualAssetListMode = true;
-                endfieldVisibleAssetRecords = endfieldVirtualAssetRecords.ToList();
+                endfieldVisibleAssetRecords = endfieldVirtualAssetRecords;
                 assetListView.VirtualListSize = endfieldVisibleAssetRecords.Count;
                 assetListView.Refresh();
                 BuildVirtualAssetTree(endfieldVirtualPathIndex);
@@ -662,20 +663,19 @@ namespace AnimeStudio.GUI
             }
 
             endfieldVirtualPathsToolStripMenuItem.Checked = false;
-            MessageBox.Show(this, "Use File > Open Endfield VFS first.", "Endfield VFS",
+            MessageBox.Show(this, "Load files or a folder first, or use File > Open Endfield VFS.", "Logical Asset Paths",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        private void ActivateEndfieldVirtualIndex(VirtualAssetPathIndex index, string mapPath, bool activate = true)
+        private void ActivateVirtualAssetIndex(VirtualAssetPathIndex index, string mapPath, bool activate = true)
         {
             Interlocked.Increment(ref endfieldListOperationGeneration);
             endfieldVirtualPathIndex = index;
-            endfieldVirtualMapPath = mapPath;
-            endfieldVirtualAssetRecords.Clear();
-            endfieldVirtualAssetRecords.AddRange(index.Records);
-            endfieldVisibleAssetRecords = endfieldVirtualAssetRecords.ToList();
-            BuildEndfieldLoadedAssetLookup();
-            RebuildEndfieldTypeFilters();
+            endfieldVirtualMapPath = mapPath ?? string.Empty;
+            endfieldVirtualAssetRecords = index.Records;
+            endfieldVisibleAssetRecords = endfieldVirtualAssetRecords;
+            BuildLoadedAssetLookup();
+            RebuildVirtualTypeFilters();
             endfieldVirtualAssetListMode = true;
             assetListView.VirtualListSize = endfieldVisibleAssetRecords.Count;
             assetListView.Refresh();
@@ -687,7 +687,7 @@ namespace AnimeStudio.GUI
             StatusStripUpdate($"Loaded {index.AssetCount:N0} assets into {index.DirectoryCount:N0} virtual paths.");
         }
 
-        private void RebuildEndfieldTypeFilters()
+        private void RebuildVirtualTypeFilters()
         {
             for (var i = filterTypeToolStripMenuItem.DropDownItems.Count - 1; i >= 1; i--)
             {
@@ -757,18 +757,26 @@ namespace AnimeStudio.GUI
             }
 
             const int maxTreeAssets = 200;
+            var catalogFiles = source.Assets.Count > 0 && source.Assets[0].ContainerOnly;
             var visibleAssets = source.Name.Equals("[no container]", StringComparison.OrdinalIgnoreCase)
                 ? 0
-                : Math.Min(source.Assets.Count, maxTreeAssets);
+                : catalogFiles
+                    ? source.Assets.Count
+                    : Math.Min(source.Assets.Count, maxTreeAssets);
             for (var i = 0; i < visibleAssets; i++)
             {
                 var asset = source.Assets[i];
                 var name = Path.GetFileName(asset.Container.Replace('\\', '/'));
                 if (string.IsNullOrWhiteSpace(name))
                     name = string.IsNullOrWhiteSpace(asset.Name) ? "[unnamed]" : asset.Name;
-                if (!string.IsNullOrWhiteSpace(asset.Type))
+                if (!asset.ContainerOnly && !string.IsNullOrWhiteSpace(asset.Type))
                     name += $" [{asset.Type}]";
-                parent.Nodes.Add(new TreeNode(name) { Tag = asset });
+                parent.Nodes.Add(new TreeNode(name)
+                {
+                    Tag = asset.ContainerOnly
+                        ? new VirtualAssetFile(asset.Container, new[] { asset })
+                        : asset
+                });
             }
             if (source.Assets.Count > visibleAssets)
                 parent.Nodes.Add(new TreeNode($"... {source.Assets.Count - visibleAssets:N0} more assets; use Asset List") { Tag = null });
@@ -1033,7 +1041,7 @@ namespace AnimeStudio.GUI
             var paths = (string[])e.Data.GetData(DataFormats.FileDrop);
             if (paths.Length > 0)
             {
-                LoadPaths(null, paths);
+                await LoadPaths(null, paths);
             }
         }
 
@@ -1066,12 +1074,6 @@ namespace AnimeStudio.GUI
             return total;
         }
 
-        long GetFolderSize(string path)
-        {
-            return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
-                            .Sum(file => new FileInfo(file).Length);
-        }
-
         private bool SizeWarning(long totalSize)
         {
             long estimatedUsedRam = (long)(totalSize * 8.5); // number deduced by loading different sets of assets and averaging the sizes
@@ -1084,9 +1086,12 @@ namespace AnimeStudio.GUI
             return true;
         }
 
-        public async void LoadPaths(List<AssetFilterDataItem> filterData, params string[] paths)
+        public async Task LoadPaths(List<AssetFilterDataItem> filterData, params string[] paths)
         {
-            await LoadPathsCore(filterData, enableResolveDependencies.Checked, paths);
+            if (filterData == null || filterData.Count == 0)
+                await LoadLazyPathsAsync(paths);
+            else
+                await LoadPathsCore(filterData, enableResolveDependencies.Checked, paths);
         }
 
         internal async void LoadIndexedPaths(List<AssetFilterDataItem> filterData, params string[] paths)
@@ -1125,124 +1130,20 @@ namespace AnimeStudio.GUI
             if (openFileDialog1.ShowDialog(this) == DialogResult.OK)
             {
                 var paths = openFileDialog1.FileNames;
-                ResetForm();
                 openDirectoryBackup = Path.GetDirectoryName(paths[0]);
-                assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
-                assetsManager.Game = Studio.Game;
-                assetsManager.FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
                 if (paths.Length == 1 && File.Exists(paths[0]) && Path.GetExtension(paths[0]) == ".txt")
                 {
-                    paths = File.ReadAllLines(paths[0]);
+                    var listFolder = Path.GetDirectoryName(Path.GetFullPath(paths[0])) ?? Environment.CurrentDirectory;
+                    paths = File.ReadAllLines(paths[0])
+                        .Where(path => !string.IsNullOrWhiteSpace(path))
+                        .Select(path => Path.IsPathRooted(path) ? path : Path.Combine(listFolder, path))
+                        .ToArray();
                 }
-                await Task.Run(() => assetsManager.LoadFiles(paths));
-                BuildAssetStructures();
+                await LoadLazyPathsAsync(paths);
             }
         }
 
         private async void loadFolder_Click(object sender, EventArgs e)
-        {
-            var openFolderDialog = new OpenFolderDialog();
-            openFolderDialog.InitialFolder = openDirectoryBackup;
-            if (openFolderDialog.ShowDialog(this) == DialogResult.OK)
-            {
-                openDirectoryBackup = openFolderDialog.Folder;
-                var folderName = Path.GetFileName(Path.TrimEndingDirectorySeparator(openDirectoryBackup));
-                var invalid = Path.GetInvalidFileNameChars();
-                var safeFolderName = new string((string.IsNullOrWhiteSpace(folderName) ? "assets" : folderName)
-                    .Select(character => invalid.Contains(character) ? '_' : character).ToArray());
-                var saveFileDialog = new SaveFileDialog
-                {
-                    Filter = "MessagePack AssetMap File|*.map",
-                    DefaultExt = "map",
-                    AddExtension = true,
-                    OverwritePrompt = false,
-                    Title = "Select the compact lazy-load index file",
-                    InitialDirectory = saveDirectoryBackup,
-                    FileName = $"{safeFolderName}-{Studio.Game.Type}.map"
-                };
-                if (saveFileDialog.ShowDialog(this) != DialogResult.OK)
-                    return;
-
-                var mapPath = Path.GetFullPath(saveFileDialog.FileName);
-                var cabMapPath = mapPath + ".cabmap";
-                var buildMap = true;
-                if (File.Exists(mapPath) && File.Exists(cabMapPath))
-                {
-                    var reuse = MessageBox.Show(this,
-                        "Use the existing asset index? Choose No to rebuild it from the selected folder.",
-                        "Lazy folder loading", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-                    if (reuse == DialogResult.Cancel)
-                        return;
-                    buildMap = reuse == DialogResult.No;
-                }
-
-                try
-                {
-                    loadFolderToolStripMenuItem.Enabled = false;
-                    saveDirectoryBackup = Path.GetDirectoryName(mapPath) ?? saveDirectoryBackup;
-                    if (buildMap)
-                    {
-                        StatusStripUpdate("Scanning source files for the lazy-load index...");
-                        var files = await Task.Run(() => Directory
-                            .EnumerateFiles(openDirectoryBackup, "*", SearchOption.AllDirectories)
-                            .ToArray());
-                        if (files.Length == 0)
-                            throw new InvalidDataException("The selected folder contains no files.");
-
-                        var mapDirectory = Path.GetDirectoryName(mapPath) ?? Environment.CurrentDirectory;
-                        var mapName = Path.GetFileNameWithoutExtension(mapPath);
-                        var buildSuffix = $"building-{Guid.NewGuid():N}";
-                        var stagedMapName = $"{mapName}.{buildSuffix}";
-                        var stagedMapPath = Path.Combine(mapDirectory, stagedMapName + ".map");
-                        var stagedCabMapPath = cabMapPath + "." + buildSuffix;
-                        AssetsHelper.SetUnityVersion(specifyUnityVersion.Text);
-                        try
-                        {
-                            await AssetsHelper.BuildBoth(files, stagedMapName, openDirectoryBackup,
-                                Studio.Game, mapDirectory, ExportListType.MessagePack,
-                                cabMapPath: stagedCabMapPath);
-                            if (!File.Exists(stagedMapPath) || !File.Exists(stagedCabMapPath))
-                                throw new InvalidDataException("The lazy-load asset and dependency indexes could not be created.");
-                            File.Move(stagedMapPath, mapPath, true);
-                            File.Move(stagedCabMapPath, cabMapPath, true);
-                        }
-                        finally
-                        {
-                            if (File.Exists(stagedMapPath))
-                                File.Delete(stagedMapPath);
-                            if (File.Exists(stagedCabMapPath))
-                                File.Delete(stagedCabMapPath);
-                        }
-                    }
-
-                    if (!AssetsHelper.LoadCABMap(cabMapPath))
-                        throw new InvalidDataException("The lazy-load dependency index could not be opened.");
-
-                    assetBrowser?.Close();
-                    assetBrowser = new AssetBrowser(this);
-                    if (!await assetBrowser.LoadMapAsync(mapPath))
-                    {
-                        assetBrowser.Dispose();
-                        assetBrowser = null;
-                        throw new InvalidDataException("The lazy-load asset index could not be opened.");
-                    }
-                    assetBrowser.Show(this);
-                    StatusStripUpdate("Lazy folder index ready. Select assets to load only their source bundles.");
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Lazy folder loading failed: {ex}");
-                    MessageBox.Show(this, ex.Message, "Lazy folder loading",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    loadFolderToolStripMenuItem.Enabled = true;
-                }
-            }
-        }
-
-        private async void loadFolderFully_Click(object sender, EventArgs e)
         {
             var openFolderDialog = new OpenFolderDialog
             {
@@ -1252,16 +1153,145 @@ namespace AnimeStudio.GUI
                 return;
 
             openDirectoryBackup = openFolderDialog.Folder;
-            var totalSize = GetFolderSize(openDirectoryBackup);
-            if (!SizeWarning(totalSize))
+            await LoadLazyPathsAsync(openFolderDialog.Folder);
+        }
+
+        private async Task LoadLazyPathsAsync(params string[] paths)
+        {
+            if (paths == null || paths.Length == 0)
                 return;
 
+            try
+            {
+                loadFileToolStripMenuItem.Enabled = false;
+                loadFolderToolStripMenuItem.Enabled = false;
+                StatusStripUpdate("Enumerating source files...");
+                var narakaCatalog = NarakaAppResIndex.FindCatalog(paths);
+                if (!string.IsNullOrWhiteSpace(narakaCatalog))
+                {
+                    if (!Studio.Game.Type.IsNaraka())
+                    {
+                        Studio.Game = GameManager.GetGameByType(GameType.Naraka);
+                        assetsManager.Game = Studio.Game;
+                        Logger.Info("Detected Naraka AppRes.info; switched the active game profile to Naraka.");
+                    }
+                    await LoadNarakaCatalogAsync(narakaCatalog);
+                    return;
+                }
+
+                var files = await Task.Run(() => paths
+                    .SelectMany(path => Directory.Exists(path)
+                        ? Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                        : File.Exists(path) ? new[] { path } : Array.Empty<string>())
+                    .Select(Path.GetFullPath)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray());
+                if (files.Length == 0)
+                    throw new InvalidDataException("The selection contains no files.");
+
+                var baseFolder = paths.Length == 1 && Directory.Exists(paths[0])
+                    ? Path.GetFullPath(paths[0])
+                    : Path.GetDirectoryName(files[0]) ?? Environment.CurrentDirectory;
+                var sourceName = paths.Length == 1
+                    ? Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(paths[0])))
+                    : $"{files.Length:N0} files";
+
+                ResetForm();
+                AssetsHelper.Clear();
+                AssetsHelper.SetUnityVersion(specifyUnityVersion.Text);
+                var index = new VirtualAssetPathIndex("Assets");
+                StatusStripUpdate($"Indexing {files.Length:N0} file(s) with bounded memory...");
+                var result = await Task.Run(() => AssetsHelper.BuildLazyIndex(
+                    files, baseFolder, Studio.Game,
+                    batch =>
+                    {
+                        foreach (var asset in batch)
+                            index.Add(asset);
+                    }));
+                index.FinishLoading(sortRecords: true);
+
+                indexedFileSourceMode = true;
+                endfieldVfsArchive = null;
+                endfieldDependencyIndex = null;
+                endfieldWorkspace = string.Empty;
+                ActivateVirtualAssetIndex(index, mapPath: null);
+                assetsManager.Game = Studio.Game;
+                assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+                Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - {sourceName}";
+                StatusStripUpdate(
+                    $"Ready: {result.AssetCount:N0} assets in logical paths, {result.CabCount:N0} CABs. Select an asset to load and preview it.");
+            }
+            catch (OperationCanceledException)
+            {
+                AssetsHelper.Clear();
+                indexedFileSourceMode = false;
+                StatusStripUpdate("Indexing cancelled.");
+            }
+            catch (Exception ex)
+            {
+                AssetsHelper.Clear();
+                indexedFileSourceMode = false;
+                Logger.Error($"Lazy loading failed: {ex}");
+                MessageBox.Show(this, ex.Message, "Load assets",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                StatusStripUpdate("Loading failed.");
+            }
+            finally
+            {
+                loadFileToolStripMenuItem.Enabled = true;
+                loadFolderToolStripMenuItem.Enabled = true;
+            }
+        }
+
+        private async Task LoadNarakaCatalogAsync(string catalogPath)
+        {
             ResetForm();
-            assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+            AssetsHelper.Clear();
+            AssetsHelper.SetUnityVersion(specifyUnityVersion.Text);
+
+            StatusStripUpdate("Reading Naraka AppRes.info logical paths...");
+            var catalog = await Task.Run(() => NarakaAppResIndex.Load(catalogPath));
+
+            var cache = NarakaAppResIndex.GetCabCache(catalogPath);
+            var cacheIsCurrent = File.Exists(cache.MapPath) && File.Exists(cache.MarkerPath) &&
+                                 string.Equals(File.ReadAllText(cache.MarkerPath).Trim(),
+                                     cache.Fingerprint, StringComparison.Ordinal);
+            var cabMapReady = false;
+            if (cacheIsCurrent)
+            {
+                StatusStripUpdate("Loading cached Naraka Bundle dependencies...");
+                cabMapReady = await Task.Run(() => AssetsHelper.LoadCABMap(cache.MapPath));
+            }
+
+            if (!cabMapReady)
+            {
+                StatusStripUpdate(
+                    $"Indexing lightweight CAB dependencies for {catalog.BundlePaths.Length:N0} Bundles (first load only)...");
+                Directory.CreateDirectory(Path.GetDirectoryName(cache.MapPath)!);
+                cabMapReady = await Task.Run(() => AssetsHelper.BuildCABMap(
+                    catalog.BundlePaths, "Naraka-auto", catalog.StreamingAssetsRoot,
+                    Studio.Game, cache.MapPath));
+                if (cabMapReady)
+                {
+                    var temporaryMarker = cache.MarkerPath + ".tmp";
+                    File.WriteAllText(temporaryMarker, cache.Fingerprint);
+                    File.Move(temporaryMarker, cache.MarkerPath, overwrite: true);
+                }
+            }
+
+            indexedFileSourceMode = true;
+            endfieldVfsArchive = null;
+            endfieldDependencyIndex = null;
+            endfieldWorkspace = string.Empty;
+            ActivateVirtualAssetIndex(catalog.Index, cache.MapPath);
             assetsManager.Game = Studio.Game;
-            assetsManager.FilterData = new AssetFilterData { Items = new List<AssetFilterDataItem>() };
-            await Task.Run(() => assetsManager.LoadFolder(openFolderDialog.Folder));
-            BuildAssetStructures();
+            assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+            Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - Naraka ({catalog.Branch})";
+            StatusStripUpdate(
+                $"Ready: {catalog.Index.AssetCount:N0} logical assets in {catalog.BundlePaths.Length:N0} Bundles" +
+                (cabMapReady
+                    ? ". Select an asset to load and preview it."
+                    : ". Dependency cache failed; selected Bundles can still be opened without their external dependencies."));
         }
 
         private async void extractFileToolStripMenuItem_Click(object sender, EventArgs e)
@@ -1330,7 +1360,7 @@ namespace AnimeStudio.GUI
             Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - {productName} - {assetsManager.assetsFileList[0].unityVersion} - {assetsManager.assetsFileList[0].m_TargetPlatform}";
 
             if (endfieldVirtualPathIndex != null)
-                BuildEndfieldLoadedAssetLookup();
+                BuildLoadedAssetLookup();
             assetListView.VirtualListSize = visibleAssets.Count;
 
             sceneTreeView.BeginUpdate();
@@ -1855,7 +1885,7 @@ namespace AnimeStudio.GUI
             if (endfieldVirtualAssetListMode)
             {
                 if (e.ItemIndex >= 0 && e.ItemIndex < endfieldVisibleAssetRecords.Count)
-                    await PreviewEndfieldAssetAsync(endfieldVisibleAssetRecords[e.ItemIndex]);
+                    await PreviewVirtualAssetAsync(endfieldVisibleAssetRecords[e.ItemIndex]);
                 return;
             }
 
@@ -1885,20 +1915,21 @@ namespace AnimeStudio.GUI
             {
                 endfieldSelectedVirtualFile = file;
                 endfieldSelectedPrefabRoot = null;
-                if (file.IsPrefab)
+                if (file.IsPrefab && (!indexedFileSourceMode ||
+                                      file.Records.Any(NarakaAppResIndex.IsContainerRecord)))
                     await PreviewEndfieldPrefabAsync(file);
                 else
                 {
                     var previewRecord = ChooseVirtualFilePreviewAsset(file.Records);
                     if (previewRecord != null)
-                        await PreviewEndfieldAssetAsync(previewRecord);
+                        await PreviewVirtualAssetAsync(previewRecord);
                 }
             }
             else if (e.Node.Tag is VirtualAssetRecord asset)
             {
                 endfieldSelectedVirtualFile = null;
                 endfieldSelectedPrefabRoot = null;
-                await PreviewEndfieldAssetAsync(asset);
+                await PreviewVirtualAssetAsync(asset);
             }
         }
 
@@ -1906,7 +1937,10 @@ namespace AnimeStudio.GUI
         {
             if (file == null || !file.IsPrefab || file.Records.Count == 0)
                 return null;
-            if (endfieldVfsArchive == null || string.IsNullOrWhiteSpace(endfieldWorkspace))
+            var isNarakaCatalogRecord = indexedFileSourceMode &&
+                                        file.Records.Any(NarakaAppResIndex.IsContainerRecord);
+            if (!isNarakaCatalogRecord &&
+                (endfieldVfsArchive == null || string.IsNullOrWhiteSpace(endfieldWorkspace)))
             {
                 StatusStripUpdate("Open Endfield VFS first to preview the Prefab structure.");
                 return null;
@@ -1927,9 +1961,23 @@ namespace AnimeStudio.GUI
                 await endfieldPreviewLock.WaitAsync(token);
                 try
                 {
-                    await LoadEndfieldBundleClosureAsync(source, token);
-                    var sourceCabs = endfieldDependencyIndex?.GetCabNames(source)
-                        ?? Array.Empty<string>();
+                    IReadOnlyCollection<string> sourceCabs;
+                    if (isNarakaCatalogRecord)
+                    {
+                        if (!File.Exists(source))
+                            throw new FileNotFoundException("The source Bundle is no longer available.", source);
+                        await LoadIndexedFileClosureAsync(file.Records[0], token,
+                            resolveDependencies: false);
+                        sourceCabs = AssetsHelper.FindCAB(source, out var cabs)
+                            ? cabs
+                            : Array.Empty<string>();
+                    }
+                    else
+                    {
+                        await LoadEndfieldBundleClosureAsync(source, token);
+                        sourceCabs = endfieldDependencyIndex?.GetCabNames(source)
+                            ?? Array.Empty<string>();
+                    }
                     var gameObjects = assetsManager.assetsFileList
                         .SelectMany(x => x.Objects).OfType<GameObject>();
                     var root = EndfieldPrefabDocument.FindRoot(gameObjects, file, sourceCabs);
@@ -1965,8 +2013,14 @@ namespace AnimeStudio.GUI
             }
         }
 
-        private async Task PreviewEndfieldAssetAsync(VirtualAssetRecord record)
+        private async Task PreviewVirtualAssetAsync(VirtualAssetRecord record)
         {
+            if (indexedFileSourceMode)
+            {
+                await PreviewIndexedFileAssetAsync(record);
+                return;
+            }
+
             assetInfoLabel.Text = $"{record.Type}\n{record.Container}\nSource: {record.Source}\nPathID: {record.PathId}";
             assetInfoLabel.Visible = displayInfo.Checked;
 
@@ -1994,7 +2048,7 @@ namespace AnimeStudio.GUI
                 try
                 {
                     await LoadEndfieldBundleClosureAsync(record.Source, token);
-                    var loadedAsset = FindLoadedEndfieldAsset(record);
+                    var loadedAsset = FindLoadedVirtualAsset(record);
                     if (loadedAsset == null)
                         throw new InvalidDataException($"PathID {record.PathId} ({record.Type}) was not found after parsing the bundle.");
 
@@ -2026,9 +2080,113 @@ namespace AnimeStudio.GUI
             }
         }
 
+        private async Task PreviewIndexedFileAssetAsync(VirtualAssetRecord record)
+        {
+            assetInfoLabel.Text = $"{record.Type}\n{record.Container}\nSource: {record.Source}\nPathID: {record.PathId}";
+            assetInfoLabel.Visible = displayInfo.Checked;
+
+            if (!enablePreview.Checked)
+                return;
+            if (string.IsNullOrWhiteSpace(record.Source) || !File.Exists(record.Source))
+            {
+                StatusStripUpdate($"Source file is no longer available: {record.Source}");
+                return;
+            }
+
+            ResetEndfieldPreviewCancellation();
+            var token = endfieldPreviewCancellation.Token;
+            try
+            {
+                await endfieldPreviewLock.WaitAsync(token);
+                try
+                {
+                    await LoadIndexedFileClosureAsync(record, token,
+                        resolveDependencies: !NarakaAppResIndex.IsContainerRecord(record));
+                    var loadedAsset = FindLoadedVirtualAsset(record);
+                    if (loadedAsset == null)
+                        throw new InvalidDataException(
+                            $"PathID {record.PathId} ({record.Type}) was not found after parsing the selected Bundle.");
+
+                    lastSelectedItem = loadedAsset;
+                    ResetEndfieldPreviewSurface();
+                    PreviewAsset(loadedAsset);
+                    if (displayInfo.Checked && loadedAsset.InfoText != null)
+                    {
+                        assetInfoLabel.Text = loadedAsset.InfoText;
+                        assetInfoLabel.Visible = true;
+                    }
+                    if (tabControl2.SelectedIndex == 1)
+                        dumpTextBox.Text = DumpAsset(loadedAsset.Asset);
+                    StatusStripUpdate($"Previewing {record.Type}: {record.Container}");
+                }
+                finally
+                {
+                    endfieldPreviewLock.Release();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // A newer selection superseded this one.
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"On-demand preview failed for {record.Source}: {ex}");
+                StatusStripUpdate($"Preview failed: {ex.Message}");
+            }
+        }
+
+        private async Task LoadIndexedFileClosureAsync(VirtualAssetRecord record,
+            CancellationToken token, bool resolveDependencies = true)
+        {
+            token.ThrowIfCancellationRequested();
+            lastSelectedItem = null;
+            endfieldSelectedPrefabRoot = null;
+            dumpTextBox.Clear();
+            assetsManager.Clear();
+            exportableAssets.Clear();
+            visibleAssets.Clear();
+            endfieldLoadedAssetLookup.Clear();
+            endfieldLoadedObjectLookup.Clear();
+            assetsManager.Game = Studio.Game;
+            assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
+            assetsManager.ResolveDependencies = resolveDependencies;
+            assetsManager.FilterData = NarakaAppResIndex.IsContainerRecord(record)
+                ? new AssetFilterData { Items = new List<AssetFilterDataItem>() }
+                : new AssetFilterData
+                {
+                    Items = new List<AssetFilterDataItem>
+                    {
+                        new()
+                        {
+                            Source = record.Source,
+                            Type = Enum.TryParse<ClassIDType>(record.Type, true, out var type)
+                                ? type
+                                : ClassIDType.UnknownType,
+                            Name = record.Name,
+                            PathID = record.PathId,
+                            Offset = record.Offset
+                        }
+                    }
+                };
+
+            StatusStripUpdate(resolveDependencies
+                ? "Loading the selected Bundle and its dependencies..."
+                : "Loading the selected Bundle on demand...");
+            await Task.Run(() => assetsManager.LoadFiles(
+                new[] { record.Source }, mergeSplitAssets: false), token);
+            token.ThrowIfCancellationRequested();
+            if (assetsManager.assetsFileList.Count == 0)
+                throw new InvalidDataException("The selected source did not contain a readable Unity asset file.");
+
+            await Task.Run(BuildAssetData, token);
+            token.ThrowIfCancellationRequested();
+            BuildLoadedAssetLookup();
+        }
+
         private void ResetEndfieldPreviewCancellation()
         {
             endfieldPreviewCancellation.Cancel();
+            assetsManager.tokenSource.Cancel();
             endfieldPreviewCancellation.Dispose();
             endfieldPreviewCancellation = new CancellationTokenSource();
         }
@@ -2088,7 +2246,7 @@ namespace AnimeStudio.GUI
 
             await Task.Run(BuildAssetData, token);
             token.ThrowIfCancellationRequested();
-            BuildEndfieldLoadedAssetLookup();
+            BuildLoadedAssetLookup();
         }
 
         private static string GetEndfieldLogicalBundlePath(string source)
@@ -2102,7 +2260,7 @@ namespace AnimeStudio.GUI
             return EndfieldVfsArchive.NormalizeLogicalPath(normalized);
         }
 
-        private void BuildEndfieldLoadedAssetLookup()
+        private void BuildLoadedAssetLookup()
         {
             endfieldLoadedAssetLookup.Clear();
             endfieldLoadedObjectLookup.Clear();
@@ -2112,11 +2270,11 @@ namespace AnimeStudio.GUI
                 if (string.IsNullOrWhiteSpace(source))
                     continue;
 
-                var key = BuildEndfieldAssetKey(source, asset.m_PathID, asset.TypeString);
+                var key = BuildVirtualAssetKey(source, asset.m_PathID, asset.TypeString);
                 if (!endfieldLoadedAssetLookup.ContainsKey(key))
                     endfieldLoadedAssetLookup.Add(key, asset);
 
-                var fileKey = BuildEndfieldAssetKey(Path.GetFileName(source), asset.m_PathID, asset.TypeString);
+                var fileKey = BuildVirtualAssetKey(Path.GetFileName(source), asset.m_PathID, asset.TypeString);
                 if (!endfieldLoadedAssetLookup.ContainsKey(fileKey))
                     endfieldLoadedAssetLookup.Add(fileKey, asset);
             }
@@ -2130,33 +2288,36 @@ namespace AnimeStudio.GUI
                 if (string.IsNullOrWhiteSpace(source))
                     continue;
                 var type = obj.type.ToString();
-                var key = BuildEndfieldAssetKey(source, obj.m_PathID, type);
+                var key = BuildVirtualAssetKey(source, obj.m_PathID, type);
                 if (!endfieldLoadedObjectLookup.ContainsKey(key))
                     endfieldLoadedObjectLookup.Add(key, obj);
-                var fileKey = BuildEndfieldAssetKey(Path.GetFileName(source), obj.m_PathID, type);
+                var fileKey = BuildVirtualAssetKey(Path.GetFileName(source), obj.m_PathID, type);
                 if (!endfieldLoadedObjectLookup.ContainsKey(fileKey))
                     endfieldLoadedObjectLookup.Add(fileKey, obj);
             }
         }
 
-        private AssetItem FindLoadedEndfieldAsset(VirtualAssetRecord record)
+        private AssetItem FindLoadedVirtualAsset(VirtualAssetRecord record)
         {
+            if (NarakaAppResIndex.IsContainerRecord(record))
+                return FindLoadedContainerAsset(record);
+
             var type = record.Type ?? string.Empty;
-            var key = BuildEndfieldAssetKey(record.Source, record.PathId, type);
+            var key = BuildVirtualAssetKey(record.Source, record.PathId, type);
             if (endfieldLoadedAssetLookup.TryGetValue(key, out var asset))
                 return asset;
 
-            key = BuildEndfieldAssetKey(Path.GetFileName(record.Source), record.PathId, type);
+            key = BuildVirtualAssetKey(Path.GetFileName(record.Source), record.PathId, type);
             if (endfieldLoadedAssetLookup.TryGetValue(key, out asset))
                 return asset;
 
-            key = BuildEndfieldAssetKey(record.Source, record.PathId, type);
+            key = BuildVirtualAssetKey(record.Source, record.PathId, type);
             if (endfieldLoadedObjectLookup.TryGetValue(key, out var loadedObject))
-                return CreateEndfieldAssetItem(loadedObject, record.Container);
+                return CreateVirtualAssetItem(loadedObject, record.Container);
 
-            key = BuildEndfieldAssetKey(Path.GetFileName(record.Source), record.PathId, type);
+            key = BuildVirtualAssetKey(Path.GetFileName(record.Source), record.PathId, type);
             if (endfieldLoadedObjectLookup.TryGetValue(key, out loadedObject))
-                return CreateEndfieldAssetItem(loadedObject, record.Container);
+                return CreateVirtualAssetItem(loadedObject, record.Container);
 
             var sourceCabs = endfieldDependencyIndex?.GetCabNames(record.Source);
             if (sourceCabs?.Count > 0)
@@ -2175,7 +2336,7 @@ namespace AnimeStudio.GUI
                     .FirstOrDefault(x => x.m_PathID == record.PathId &&
                         string.Equals(x.type.ToString(), type, StringComparison.OrdinalIgnoreCase));
                 if (loadedObject != null)
-                    return CreateEndfieldAssetItem(loadedObject, record.Container);
+                    return CreateVirtualAssetItem(loadedObject, record.Container);
             }
 
             asset = exportableAssets.FirstOrDefault(x =>
@@ -2195,17 +2356,53 @@ namespace AnimeStudio.GUI
                 .FirstOrDefault(x => x.m_PathID == record.PathId &&
                     string.Equals(x.Name, record.Name, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(x.type.ToString(), type, StringComparison.OrdinalIgnoreCase));
-            return loadedObject == null ? null : CreateEndfieldAssetItem(loadedObject, record.Container);
+            return loadedObject == null ? null : CreateVirtualAssetItem(loadedObject, record.Container);
         }
 
-        private static AssetItem CreateEndfieldAssetItem(AnimeStudio.Object asset, string container)
+        private AssetItem FindLoadedContainerAsset(VirtualAssetRecord record)
+        {
+            if (record.Container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+            {
+                var file = new VirtualAssetFile(record.Container, new[] { record });
+                IReadOnlyCollection<string> preferredCabs = AssetsHelper.FindCAB(record.Source, out var cabs)
+                    ? cabs
+                    : Array.Empty<string>();
+                var root = EndfieldPrefabDocument.FindRoot(
+                    assetsManager.assetsFileList.SelectMany(x => x.Objects).OfType<GameObject>(),
+                    file, preferredCabs);
+                if (root != null)
+                    return CreateVirtualAssetItem(root, record.Container);
+            }
+
+            var candidates = exportableAssets.Where(x =>
+                    string.Equals(x.Container, record.Container, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var asset = candidates.FirstOrDefault(x =>
+                            string.Equals(x.TypeString, record.Type, StringComparison.OrdinalIgnoreCase))
+                        ?? candidates.FirstOrDefault(x =>
+                            string.Equals(x.Text, Path.GetFileNameWithoutExtension(record.Name),
+                                StringComparison.OrdinalIgnoreCase))
+                        ?? candidates.FirstOrDefault();
+            if (asset != null)
+                return asset;
+
+            var stem = Path.GetFileNameWithoutExtension(record.Name);
+            var loadedObject = assetsManager.assetsFileList.SelectMany(x => x.Objects)
+                .FirstOrDefault(x =>
+                    string.Equals(x.Name, stem, StringComparison.OrdinalIgnoreCase) &&
+                    (string.Equals(x.type.ToString(), record.Type, StringComparison.OrdinalIgnoreCase) ||
+                     record.Type.Equals("Asset", StringComparison.OrdinalIgnoreCase)));
+            return loadedObject == null ? null : CreateVirtualAssetItem(loadedObject, record.Container);
+        }
+
+        private static AssetItem CreateVirtualAssetItem(AnimeStudio.Object asset, string container)
         {
             var item = new AssetItem(asset) { Container = container ?? string.Empty };
             item.SetSubItems();
             return item;
         }
 
-        private static string BuildEndfieldAssetKey(string source, long pathId, string type)
+        private static string BuildVirtualAssetKey(string source, long pathId, string type)
         {
             var normalized = source ?? string.Empty;
             try { normalized = Path.GetFullPath(normalized); } catch { }
@@ -2910,8 +3107,9 @@ namespace AnimeStudio.GUI
             endfieldDependencyIndex = null;
             endfieldVfsArchive = null;
             endfieldVirtualAssetListMode = false;
-            endfieldVirtualAssetRecords.Clear();
-            endfieldVisibleAssetRecords.Clear();
+            indexedFileSourceMode = false;
+            endfieldVirtualAssetRecords = new List<VirtualAssetRecord>();
+            endfieldVisibleAssetRecords = new List<VirtualAssetRecord>();
             endfieldLoadedAssetLookup.Clear();
             endfieldLoadedObjectLookup.Clear();
             endfieldVirtualMapPath = string.Empty;
@@ -3302,7 +3500,7 @@ namespace AnimeStudio.GUI
                 {
                     if (index < 0 || index >= endfieldVisibleAssetRecords.Count)
                         continue;
-                    var asset = FindLoadedEndfieldAsset(endfieldVisibleAssetRecords[index]);
+                    var asset = FindLoadedVirtualAsset(endfieldVisibleAssetRecords[index]);
                     if (asset != null && !loaded.Contains(asset))
                         loaded.Add(asset);
                 }
@@ -3421,17 +3619,29 @@ namespace AnimeStudio.GUI
 
         private async void ExportAssets(ExportFilter type, ExportType exportType)
         {
+            if (endfieldVirtualAssetListMode && indexedFileSourceMode)
+            {
+                var records = GetVirtualExportRecords(type);
+                if (records.Count == 0)
+                {
+                    StatusStripUpdate("No indexed assets selected for export");
+                    return;
+                }
+                var indexedFolderDialog = new OpenFolderDialog
+                {
+                    InitialFolder = saveDirectoryBackup,
+                    Title = "Select export folder"
+                };
+                if (indexedFolderDialog.ShowDialog(this) != DialogResult.OK)
+                    return;
+                timer.Stop();
+                saveDirectoryBackup = indexedFolderDialog.Folder;
+                await ExportIndexedVirtualAssets(records, indexedFolderDialog.Folder, exportType);
+                return;
+            }
             if (endfieldVirtualAssetListMode && exportType == ExportType.Eiem)
             {
-                var records = type switch
-                {
-                    ExportFilter.All => endfieldVirtualAssetRecords,
-                    ExportFilter.Filtered => endfieldVisibleAssetRecords,
-                    ExportFilter.Selected => assetListView.SelectedIndices.Cast<int>()
-                        .Where(i => i >= 0 && i < endfieldVisibleAssetRecords.Count)
-                        .Select(i => endfieldVisibleAssetRecords[i]).ToList(),
-                    _ => new List<VirtualAssetRecord>()
-                };
+                var records = GetVirtualExportRecords(type);
                 if (records.Count == 0)
                 {
                     StatusStripUpdate("No virtual assets selected for EIEM export");
@@ -3477,6 +3687,62 @@ namespace AnimeStudio.GUI
             {
                 StatusStripUpdate("No exportable assets loaded");
             }
+        }
+
+        private List<VirtualAssetRecord> GetVirtualExportRecords(ExportFilter type)
+        {
+            return type switch
+            {
+                ExportFilter.All => endfieldVirtualAssetRecords,
+                ExportFilter.Filtered => endfieldVisibleAssetRecords,
+                ExportFilter.Selected => assetListView.SelectedIndices.Cast<int>()
+                    .Where(i => i >= 0 && i < endfieldVisibleAssetRecords.Count)
+                    .Select(i => endfieldVisibleAssetRecords[i]).ToList(),
+                _ => new List<VirtualAssetRecord>()
+            };
+        }
+
+        private async Task ExportIndexedVirtualAssets(List<VirtualAssetRecord> records,
+            string output, ExportType exportType)
+        {
+            var processed = 0;
+            foreach (var batch in records.GroupBy(record => (record.Source, record.Offset)))
+            {
+                try
+                {
+                    ResetEndfieldPreviewCancellation();
+                    var token = endfieldPreviewCancellation.Token;
+                    await endfieldPreviewLock.WaitAsync(token);
+                    try
+                    {
+                        await LoadIndexedFileClosureAsync(batch.First(), token);
+                        var assets = batch.Select(FindLoadedVirtualAsset)
+                            .Where(asset => asset != null)
+                            .Distinct()
+                            .ToList();
+                        if (assets.Count > 0)
+                            await Studio.ExportAssets(output, assets, exportType, openAfterExport: false);
+                    }
+                    finally
+                    {
+                        endfieldPreviewLock.Release();
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    StatusStripUpdate("Indexed export cancelled.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Indexed export failed for {batch.Key.Source}: {ex}");
+                }
+                processed += batch.Count();
+                StatusStripUpdate($"Exported indexed batch: {processed:N0}/{records.Count:N0} assets processed.");
+            }
+            StatusStripUpdate($"Finished processing {processed:N0} indexed assets for export.");
+            if (processed > 0 && Properties.Settings.Default.openAfterExport)
+                Studio.OpenFolderInExplorer(output);
         }
 
         private List<VirtualAssetFile> GetCheckedEndfieldPrefabFiles()
@@ -3547,10 +3813,10 @@ namespace AnimeStudio.GUI
             {
                 try
                 {
-                    await PreviewEndfieldAssetAsync(batch.First());
+                    await PreviewVirtualAssetAsync(batch.First());
                     foreach (var record in batch)
                     {
-                        var item = FindLoadedEndfieldAsset(record);
+                        var item = FindLoadedVirtualAsset(record);
                         if (item == null || !Exporter.ExportEiemFile(item,
                                 BuildEiemJsonExportPath(output, record), record.Source, record.Container))
                             skipped++;

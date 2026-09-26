@@ -19,6 +19,7 @@ namespace AnimeStudio
     {
         public sealed record BundleDependencyEntry(string Name, string[] Dependencies);
         public sealed record BundleIndexResult(List<AssetEntry> Assets, List<BundleDependencyEntry> Files);
+        public sealed record LazyIndexBuildResult(long AssetCount, int CabCount, int CollisionCount);
 
         public const string MapName = "Maps";
 
@@ -92,9 +93,11 @@ namespace AnimeStudio
                 var cab = work.Dequeue();
                 if (CABMap.TryGetValue(cab, out var entry))
                 {
-                    var fullPath = Path.Combine(BaseFolder, entry.Path);
+                    var fullPath = Path.GetFullPath(Path.Combine(BaseFolder, entry.Path));
                     Logger.Verbose($"Found {cab} in {fullPath}");
-                    if (!paths.Contains(fullPath))
+                    var sourceIsOffsetFiltered = Offsets.TryGetValue(fullPath, out var sourceOffsets) &&
+                                                 sourceOffsets.Count > 0;
+                    if (!paths.Contains(fullPath) || sourceIsOffsetFiltered)
                     {
                         Offsets.TryAdd(fullPath, new HashSet<long>());
                         Offsets[fullPath].Add(entry.Offset);
@@ -121,22 +124,46 @@ namespace AnimeStudio
         }
 
         public static string[] ProcessFiles(string[] files_list)
+            => ProcessFiles(files_list, null);
+
+        private static string[] ProcessFiles(string[] files_list,
+            Dictionary<string, HashSet<long>> selectedOffsets)
         {
             HashSet<string> files = new HashSet<string>(files_list, StringComparer.OrdinalIgnoreCase);
             foreach (var file in files)
             {
                 Offsets.TryAdd(file, new HashSet<long>());
                 Logger.Verbose($"Added {file} to Offsets dictionary");
-                if (FindCAB(file, out var cabs))
+                HashSet<long> selected = null;
+                selectedOffsets?.TryGetValue(Path.GetFullPath(file), out selected);
+                if (selected?.Count > 0)
+                {
+                    foreach (var offset in selected)
+                        Offsets[file].Add(offset);
+                }
+
+                var relativePath = Path.GetRelativePath(BaseFolder, file);
+                var cabs = CABMap.Where(pair =>
+                        pair.Value.Path.Equals(relativePath, StringComparison.OrdinalIgnoreCase) &&
+                        (selected == null || selected.Count == 0 || selected.Contains(pair.Value.Offset)))
+                    .Select(pair => pair.Key)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                Logger.Verbose($"Found {cabs.Count} CABs that belong to {relativePath}" +
+                               (selected?.Count > 0 ? " at the selected offsets" : string.Empty));
+                if (cabs.Count > 0)
                 {
                     AddCABOffsetsFast(files, cabs);
                 }
             }
-            Logger.Verbose($"Finished resolving dependncies, the original {files.Count} files will be loaded entirely, and the {Offsets.Count - files.Count} dependicnes will be loaded from cached offsets only");
+            Logger.Verbose($"Finished resolving dependencies for {files.Count} source files and {Offsets.Count - files.Count} additional dependency files");
             return Offsets.Keys.ToArray();
         }
 
         public static string[] ProcessDependencies(string[] files)
+            => ProcessDependencies(files, null);
+
+        public static string[] ProcessDependencies(string[] files,
+            IEnumerable<AssetsManager.AssetFilterDataItem> filterItems)
         {
             if (CABMap.Count == 0)
             {
@@ -145,12 +172,24 @@ namespace AnimeStudio
             else
             {
                 Logger.Info("Resolving Dependencies...");
-                files = ProcessFiles(files);
+                var selectedOffsets = filterItems?
+                    .Where(item => item.Offset >= 0 && !string.IsNullOrWhiteSpace(item.Source))
+                    .GroupBy(item => Path.GetFullPath(item.Source), StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key,
+                        group => group.Select(item => item.Offset).ToHashSet(),
+                        StringComparer.OrdinalIgnoreCase);
+                files = ProcessFiles(files, selectedOffsets);
             }
             return files;
         }
 
         public static void BuildCABMap(string[] files, string mapName, string baseFolder, Game game)
+        {
+            BuildCABMap(files, mapName, baseFolder, game, null);
+        }
+
+        public static bool BuildCABMap(string[] files, string mapName, string baseFolder, Game game,
+            string outputPath)
         {
             Logger.Info("Building CABMap...");
             try
@@ -162,13 +201,60 @@ namespace AnimeStudio
                 assetsManager.Game = game;
                 ForEachLoadedBundle(files, file => BuildCABMap(file, ref collision));
 
-                DumpCABMap(mapName);
+                DumpCABMap(mapName, outputPath);
 
                 Logger.Info($"CABMap build successfully !! {collision} collisions found");
+                return true;
             }
             catch (Exception e)
             {
                 Logger.Warning($"CABMap was not build, {e}");
+                CABMap.Clear();
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Build the lightweight metadata needed by the main asset browser without retaining
+        /// every parsed Bundle. Each Bundle is parsed, reported to <paramref name="consume"/>,
+        /// and released before the next one is opened. The in-memory CAB map is kept so a
+        /// selected asset can resolve and load only its dependency closure later.
+        /// </summary>
+        public static LazyIndexBuildResult BuildLazyIndex(string[] files, string baseFolder,
+            Game game, Action<IReadOnlyList<AssetEntry>> consume)
+        {
+            if (files == null || files.Length == 0)
+                throw new ArgumentException("At least one input file is required.", nameof(files));
+            ArgumentNullException.ThrowIfNull(consume);
+
+            CABMap.Clear();
+            Offsets.Clear();
+            Progress.Reset();
+            BaseFolder = Path.GetFullPath(baseFolder);
+            assetsManager.Game = game;
+            var collision = 0;
+            long assetCount = 0;
+            var batch = new List<AssetEntry>(256);
+
+            try
+            {
+                ForEachLoadedBundle(files, file =>
+                {
+                    BuildCABMap(file, ref collision);
+                    batch.Clear();
+                    BuildAssetMap(file, batch, null, null, null, includeHash: false);
+                    UpdateContainers(batch, game);
+                    consume(batch);
+                    assetCount += batch.Count;
+                });
+                tokenSource.Token.ThrowIfCancellationRequested();
+                Logger.Info($"Lazy index built with {assetCount} assets, {CABMap.Count} CABs and {collision} collisions.");
+                return new LazyIndexBuildResult(assetCount, CABMap.Count, collision);
+            }
+            finally
+            {
+                assetsManager.Clear();
+                StringCache.Clear();
             }
         }
 
@@ -187,6 +273,8 @@ namespace AnimeStudio
             var filesList = new List<string>(toReadFile);
             for (int i = 0; i < filesList.Count; i++)
             {
+                if (tokenSource.IsCancellationRequested)
+                    break;
                 var file = filesList[i];
                 var processedViaCallback = false;
 
@@ -201,6 +289,7 @@ namespace AnimeStudio
                     {
                         return;
                     }
+                    tokenSource.Token.ThrowIfCancellationRequested();
                     processedViaCallback = true;
                     if (assetsManager.assetsFileList.Count > 0)
                     {

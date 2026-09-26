@@ -7,7 +7,9 @@ using System.Xml.Linq;
 namespace AnimeStudio.GUI
 {
     internal sealed record VirtualAssetRecord(string Name, string Container,
-                                               string Type, long PathId, string Source);
+                                               string Type, long PathId, string Source,
+                                               long Offset = -1,
+                                               bool ContainerOnly = false);
 
     /// <summary>
     /// One logical Unity asset file from AssetBundle.m_Container.  Records are
@@ -42,6 +44,13 @@ namespace AnimeStudio.GUI
 
     internal sealed class VirtualAssetPathIndex
     {
+        private readonly Dictionary<string, string> sourcePool =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> containerPool =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> typePool =
+            new(StringComparer.Ordinal);
+
         public VirtualAssetPathNode Root { get; }
         public long AssetCount { get; private set; }
         public int DirectoryCount { get; private set; }
@@ -107,6 +116,12 @@ namespace AnimeStudio.GUI
 
         internal void Add(VirtualAssetRecord asset)
         {
+            asset = asset with
+            {
+                Container = Pool(containerPool, asset.Container ?? string.Empty),
+                Type = Pool(typePool, asset.Type ?? string.Empty),
+                Source = Pool(sourcePool, asset.Source ?? string.Empty)
+            };
             AssetCount++;
             Records.Add(asset);
             var container = string.IsNullOrWhiteSpace(asset.Container)
@@ -117,7 +132,13 @@ namespace AnimeStudio.GUI
             // final file name as a leaf node; Unity objects belonging to that
             // file remain in the Asset List/Preview instead of becoming fake
             // sibling files in Scene Hierarchy.
-            var directoryPartCount = parts.Length;
+            // Game catalogs already provide one record per logical file. Keep only
+            // their directory nodes resident; file leaves are created by the TreeView
+            // when that directory is expanded. This saves hundreds of thousands of
+            // dictionaries/lists for catalogs such as Naraka's AppRes.info.
+            var directoryPartCount = asset.ContainerOnly
+                ? Math.Max(0, parts.Length - 1)
+                : parts.Length;
             var node = Root;
             node.AssetCount++;
             for (var i = 0; i < directoryPartCount; i++)
@@ -134,6 +155,17 @@ namespace AnimeStudio.GUI
             node.Assets.Add(asset);
         }
 
+        internal void Add(AssetEntry asset)
+        {
+            Add(new VirtualAssetRecord(
+                asset.Name ?? string.Empty,
+                Pool(containerPool, asset.Container ?? string.Empty),
+                Pool(typePool, asset.Type.ToString()),
+                asset.PathID,
+                Pool(sourcePool, asset.Source ?? string.Empty),
+                asset.Offset));
+        }
+
         internal void FinishLoading(bool sortRecords)
         {
             if (sortRecords)
@@ -148,6 +180,9 @@ namespace AnimeStudio.GUI
                 });
             }
             DirectoryCount = CountDirectories(Root);
+            sourcePool.Clear();
+            containerPool.Clear();
+            typePool.Clear();
         }
 
         private static int CountDirectories(VirtualAssetPathNode node)

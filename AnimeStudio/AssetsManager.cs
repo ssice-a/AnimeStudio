@@ -101,7 +101,7 @@ namespace AnimeStudio
             }
 
             if (ResolveDependencies)
-                toReadFile = AssetsHelper.ProcessDependencies(toReadFile);
+                toReadFile = AssetsHelper.ProcessDependencies(toReadFile, FilterData.Items);
             Load(toReadFile);
 
             if (Silent)
@@ -220,11 +220,13 @@ namespace AnimeStudio
 
                     if (item.Offset >= 0)
                         set.Add(item.Offset);
-                    else
-                        if (AssetsHelper.TryGet(item.Source, out var offsets) && offsets.Length > 0)
-                        foreach (var off in offsets)
-                            set.Add(off);
                 }
+
+                // Include dependency offsets resolved from the in-memory CAB map. This also
+                // covers dependencies stored beside the selected CAB in the same outer block.
+                if (AssetsHelper.TryGet(reader.FullPath, out var dependencyOffsets))
+                    foreach (var offset in dependencyOffsets)
+                        set.Add(offset);
 
                 OffsetData[key] = set.ToList();
             }
@@ -527,7 +529,10 @@ namespace AnimeStudio
                     var total = stream.Length;
 
                     OffsetData.TryGetValue(reader.FileName, out var manualOffsets);
-                    bool isManualOffsets = (manualOffsets != null && manualOffsets.Count > 0) && Game.Type.IsArknightsEndfieldGroup();
+                    // Lazy indexes record the inner offset for every supported block format.
+                    // When an offset is supplied, do not enumerate/decompress every sibling
+                    // Bundle in the outer file just to preview one indexed asset.
+                    bool isManualOffsets = manualOffsets != null && manualOffsets.Count > 0;
                     IEnumerable<long> offsetsEnumerable = isManualOffsets
                         ? manualOffsets
                         : stream.GetOffsets(reader.FullPath);
@@ -577,7 +582,7 @@ namespace AnimeStudio
                 {
                     case FileType.ENCRFile:
                     case FileType.BundleFile:
-                        file = new BundleFile(reader, Game);
+                        file = new BundleFile(reader, Game, lazyIndex: SkipProcess);
                         break;
                     case FileType.Blb3File:
                         file = new Blb3File(reader, reader.FullPath);

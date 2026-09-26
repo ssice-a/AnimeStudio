@@ -36,13 +36,9 @@ namespace AnimeStudio.GUI
             return license;
         }
 
-        private void checkUpdatesLinkLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        private async void checkUpdatesLinkLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
         {
-            var ps = new ProcessStartInfo("https://nightly.link/Escartem/AnimeStudio/workflows/build/master")
-            {
-                UseShellExecute = true
-            };
-            Process.Start(ps);
+            await ReleaseUpdateChecker.CheckAndPromptAsync(this, manual: true);
         }
 
         private void gitYarikLinkLabel_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)

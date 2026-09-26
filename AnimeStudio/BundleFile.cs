@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Buffers;
+using System.Buffers.Binary;
 
 namespace AnimeStudio
 {
@@ -120,8 +121,9 @@ namespace AnimeStudio
         
         private bool HasUncompressedDataHash = true;
         private bool HasBlockInfoNeedPaddingAtStart = true;
+        private bool IsNarakaPagedBundle;
 
-        public BundleFile(FileReader reader, Game game)
+        public BundleFile(FileReader reader, Game game, bool lazyIndex = false)
         {
             Game = game;
             m_Header = ReadBundleHeader(reader);
@@ -155,10 +157,17 @@ namespace AnimeStudio
                         ReadUnityCN(reader);
                     }
                     ReadBlocksInfoAndDirectory(reader);
-                    using (var blocksStream = CreateBlocksStream(reader.FullPath))
+                    if (lazyIndex && IsNarakaPagedBundle && File.Exists(reader.FullPath))
                     {
-                        ReadBlocks(reader, blocksStream);
-                        ReadFiles(blocksStream, reader.FullPath);
+                        ReadFilesLazily(reader);
+                    }
+                    else
+                    {
+                        using (var blocksStream = CreateBlocksStream(reader.FullPath))
+                        {
+                            ReadBlocks(reader, blocksStream);
+                            ReadFiles(blocksStream, reader.FullPath);
+                        }
                     }
                     break;
             }
@@ -276,7 +285,13 @@ namespace AnimeStudio
                 /*var memoryMappedFile = MemoryMappedFile.CreateNew(null, uncompressedSizeSum);
                 assetsDataStream = memoryMappedFile.CreateViewStream();*/
                 Logger.Verbose($"Using temp file for large decompressed blocks ({uncompressedSizeSum} bytes)");
-                blocksStream = new FileStream(path + ".temp", FileMode.Create, FileAccess.ReadWrite, FileShare.None, 4096, FileOptions.DeleteOnClose);
+                blocksStream = new FileStream(
+                    path + ".temp",
+                    FileMode.Create,
+                    FileAccess.ReadWrite,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    4096,
+                    FileOptions.DeleteOnClose | FileOptions.SequentialScan);
             }
             else
             {
@@ -338,7 +353,22 @@ namespace AnimeStudio
                 fileList.Add(file);
                 file.path = node.path;
                 file.fileName = Path.GetFileName(node.path);
-                if (node.size >= int.MaxValue)
+                if (node.offset < 0 || node.size < 0 || node.offset > blocksStream.Length - node.size)
+                {
+                    throw new InvalidDataException(
+                        $"Bundle node {node.path} range 0x{node.offset:X}+0x{node.size:X} exceeds decompressed data size 0x{blocksStream.Length:X}");
+                }
+                if (blocksStream is FileStream tempFileStream)
+                {
+                    // Keep large CAB/resource nodes on disk. Each node gets an independent,
+                    // bounded handle; closing the original DeleteOnClose handle only removes
+                    // the temp file after the final node stream has also been disposed.
+                    file.stream = new BoundedFileStream(
+                        tempFileStream.Name,
+                        node.offset,
+                        node.size);
+                }
+                else if (node.size >= int.MaxValue)
                 {
                     /*var memoryMappedFile = MemoryMappedFile.CreateNew(null, entryinfo_size);
                     file.stream = memoryMappedFile.CreateViewStream();*/
@@ -370,6 +400,429 @@ namespace AnimeStudio
                     blocksStream.CopyTo(file.stream, node.size);
                     file.stream.Position = 0;
                 }
+            }
+        }
+
+        private void ReadFilesLazily(FileReader reader)
+        {
+            Logger.Verbose("Creating on-demand Naraka block streams...");
+            fileList = new List<StreamFile>();
+            var source = new LazyNarakaBundleData(reader.FullPath, reader.Position, m_BlocksInfo);
+            try
+            {
+                foreach (var node in m_DirectoryInfo)
+                {
+                    if (node.offset < 0 || node.size < 0 || node.offset > source.Length - node.size)
+                    {
+                        throw new InvalidDataException(
+                            $"Bundle node {node.path} range 0x{node.offset:X}+0x{node.size:X} exceeds decompressed data size 0x{source.Length:X}");
+                    }
+
+                    fileList.Add(new StreamFile
+                    {
+                        path = node.path,
+                        fileName = Path.GetFileName(node.path),
+                        stream = new LazyNarakaNodeStream(source, node.offset, node.size)
+                    });
+                }
+            }
+            catch
+            {
+                foreach (var file in fileList)
+                {
+                    file.stream?.Dispose();
+                }
+                fileList.Clear();
+                throw;
+            }
+            finally
+            {
+                source.Release();
+            }
+        }
+
+        private sealed class LazyNarakaBundleData
+        {
+            private readonly struct Block
+            {
+                public readonly long LogicalOffset;
+                public readonly long PhysicalOffset;
+                public readonly uint CompressedSize;
+                public readonly uint UncompressedSize;
+                public readonly CompressionType Compression;
+
+                public Block(long logicalOffset, long physicalOffset, StorageBlock info)
+                {
+                    LogicalOffset = logicalOffset;
+                    PhysicalOffset = physicalOffset;
+                    CompressedSize = info.compressedSize;
+                    UncompressedSize = info.uncompressedSize;
+                    Compression = (CompressionType)(info.flags & StorageBlockFlags.CompressionTypeMask);
+                }
+            }
+
+            private sealed class CachedBlock
+            {
+                public byte[] Buffer;
+                public LinkedListNode<int> LruNode;
+            }
+
+            private const long MaxCacheBytes = 32L * 1024 * 1024;
+            private readonly object sync = new();
+            private readonly FileStream source;
+            private readonly Block[] blocks;
+            private readonly Dictionary<int, CachedBlock> cache = new();
+            private readonly LinkedList<int> lru = new();
+            private long cachedBytes;
+            private int referenceCount = 1;
+            private bool disposed;
+
+            public long Length { get; }
+
+            public LazyNarakaBundleData(string path, long dataStart, List<StorageBlock> blockInfo)
+            {
+                source = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    4096,
+                    FileOptions.RandomAccess);
+                blocks = new Block[blockInfo.Count];
+                var logicalOffset = 0L;
+                var physicalOffset = dataStart;
+                for (var i = 0; i < blockInfo.Count; i++)
+                {
+                    physicalOffset = Align(physicalOffset, 0x1000);
+                    blocks[i] = new Block(logicalOffset, physicalOffset, blockInfo[i]);
+                    logicalOffset = checked(logicalOffset + blockInfo[i].uncompressedSize);
+                    physicalOffset = checked(physicalOffset + blockInfo[i].compressedSize);
+                }
+                Length = logicalOffset;
+            }
+
+            public void AddReference()
+            {
+                lock (sync)
+                {
+                    ObjectDisposedException.ThrowIf(disposed, this);
+                    referenceCount++;
+                }
+            }
+
+            public void Release()
+            {
+                lock (sync)
+                {
+                    if (--referenceCount > 0)
+                    {
+                        return;
+                    }
+                    disposed = true;
+                    foreach (var item in cache.Values)
+                    {
+                        ArrayPool<byte>.Shared.Return(item.Buffer);
+                    }
+                    cache.Clear();
+                    lru.Clear();
+                    source.Dispose();
+                }
+            }
+
+            public int Read(long position, Span<byte> destination)
+            {
+                lock (sync)
+                {
+                    ObjectDisposedException.ThrowIf(disposed, this);
+                    if (position < 0 || position > Length)
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(position));
+                    }
+
+                    var remaining = (int)Math.Min(destination.Length, Length - position);
+                    var totalRead = remaining;
+                    while (remaining > 0)
+                    {
+                        var blockIndex = FindBlock(position);
+                        var block = blocks[blockIndex];
+                        var buffer = GetBlock(blockIndex);
+                        var offsetInBlock = checked((int)(position - block.LogicalOffset));
+                        var count = Math.Min(remaining, checked((int)block.UncompressedSize) - offsetInBlock);
+                        buffer.AsSpan(offsetInBlock, count).CopyTo(destination);
+                        destination = destination[count..];
+                        remaining -= count;
+                        position += count;
+                    }
+                    return totalRead;
+                }
+            }
+
+            private int FindBlock(long position)
+            {
+                var low = 0;
+                var high = blocks.Length - 1;
+                while (low <= high)
+                {
+                    var middle = low + ((high - low) / 2);
+                    var block = blocks[middle];
+                    if (position < block.LogicalOffset)
+                    {
+                        high = middle - 1;
+                    }
+                    else if (position >= block.LogicalOffset + block.UncompressedSize)
+                    {
+                        low = middle + 1;
+                    }
+                    else
+                    {
+                        return middle;
+                    }
+                }
+                throw new EndOfStreamException($"No Naraka data block contains logical offset 0x{position:X}");
+            }
+
+            private byte[] GetBlock(int index)
+            {
+                if (cache.TryGetValue(index, out var cached))
+                {
+                    lru.Remove(cached.LruNode);
+                    lru.AddLast(cached.LruNode);
+                    return cached.Buffer;
+                }
+
+                var block = blocks[index];
+                var compressedSize = checked((int)block.CompressedSize);
+                var uncompressedSize = checked((int)block.UncompressedSize);
+                var compressed = ArrayPool<byte>.Shared.Rent(compressedSize);
+                var uncompressed = ArrayPool<byte>.Shared.Rent(uncompressedSize);
+                try
+                {
+                    source.Position = block.PhysicalOffset;
+                    source.ReadExactly(compressed.AsSpan(0, compressedSize));
+                    int numWrite;
+                    switch (block.Compression)
+                    {
+                        case CompressionType.None:
+                            if (compressedSize != uncompressedSize)
+                            {
+                                throw new InvalidDataException(
+                                    $"Uncompressed Naraka block has mismatched sizes {compressedSize}/{uncompressedSize}");
+                            }
+                            compressed.AsSpan(0, compressedSize).CopyTo(uncompressed);
+                            numWrite = uncompressedSize;
+                            break;
+                        case CompressionType.Lz4:
+                        case CompressionType.Lz4HC:
+                            numWrite = LZ4.Instance.Decompress(
+                                compressed.AsSpan(0, compressedSize),
+                                uncompressed.AsSpan(0, uncompressedSize));
+                            break;
+                        case CompressionType.Zstd:
+                            using (var decompressor = new Decompressor())
+                            {
+                                numWrite = decompressor.Unwrap(
+                                    compressed,
+                                    0,
+                                    compressedSize,
+                                    uncompressed,
+                                    0,
+                                    uncompressedSize);
+                            }
+                            break;
+                        default:
+                            throw new IOException($"Unsupported lazy Naraka compression type {block.Compression}");
+                    }
+                    if (numWrite != uncompressedSize)
+                    {
+                        throw new IOException(
+                            $"Naraka block decompression error, wrote {numWrite} bytes but expected {uncompressedSize}");
+                    }
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(uncompressed);
+                    throw;
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(compressed);
+                }
+
+                var lruNode = lru.AddLast(index);
+                cache.Add(index, new CachedBlock { Buffer = uncompressed, LruNode = lruNode });
+                cachedBytes += uncompressedSize;
+                while (cachedBytes > MaxCacheBytes && lru.First != lru.Last)
+                {
+                    var evictIndex = lru.First.Value;
+                    lru.RemoveFirst();
+                    var evicted = cache[evictIndex];
+                    cache.Remove(evictIndex);
+                    cachedBytes -= blocks[evictIndex].UncompressedSize;
+                    ArrayPool<byte>.Shared.Return(evicted.Buffer);
+                }
+                return uncompressed;
+            }
+
+            private static long Align(long value, int alignment)
+                => (value + alignment - 1) & ~(alignment - 1L);
+        }
+
+        private sealed class LazyNarakaNodeStream : Stream
+        {
+            private LazyNarakaBundleData source;
+            private readonly long start;
+            private readonly long length;
+            private long position;
+
+            public LazyNarakaNodeStream(LazyNarakaBundleData source, long start, long length)
+            {
+                this.source = source;
+                this.start = start;
+                this.length = length;
+                source.AddReference();
+            }
+
+            public override bool CanRead => source != null;
+            public override bool CanSeek => source != null;
+            public override bool CanWrite => false;
+            public override long Length => length;
+            public override long Position
+            {
+                get => position;
+                set => Seek(value, SeekOrigin.Begin);
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                ArgumentNullException.ThrowIfNull(buffer);
+                return Read(buffer.AsSpan(offset, count));
+            }
+
+            public override int Read(Span<byte> buffer)
+            {
+                ObjectDisposedException.ThrowIf(source == null, this);
+                var count = (int)Math.Min(buffer.Length, length - position);
+                if (count <= 0)
+                {
+                    return 0;
+                }
+                var read = source.Read(start + position, buffer[..count]);
+                position += read;
+                return read;
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                ObjectDisposedException.ThrowIf(source == null, this);
+                var target = origin switch
+                {
+                    SeekOrigin.Begin => offset,
+                    SeekOrigin.Current => position + offset,
+                    SeekOrigin.End => length + offset,
+                    _ => throw new ArgumentOutOfRangeException(nameof(origin))
+                };
+                if (target < 0 || target > length)
+                {
+                    throw new IOException("Attempted to seek outside the lazy bundle node");
+                }
+                position = target;
+                return position;
+            }
+
+            public override void Flush() { }
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    var current = source;
+                    source = null;
+                    current?.Release();
+                }
+                base.Dispose(disposing);
+            }
+        }
+
+        private sealed class BoundedFileStream : Stream
+        {
+            private readonly FileStream stream;
+            private readonly long start;
+            private readonly long length;
+
+            public BoundedFileStream(string path, long start, long length)
+            {
+                this.start = start;
+                this.length = length;
+                stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    4096,
+                    FileOptions.RandomAccess);
+                stream.Position = start;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => true;
+            public override bool CanWrite => false;
+            public override long Length => length;
+            public override long Position
+            {
+                get => stream.Position - start;
+                set => Seek(value, SeekOrigin.Begin);
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var remaining = length - Position;
+                if (remaining <= 0)
+                {
+                    return 0;
+                }
+                return stream.Read(buffer, offset, (int)Math.Min(count, remaining));
+            }
+
+            public override int Read(Span<byte> buffer)
+            {
+                var remaining = length - Position;
+                if (remaining <= 0)
+                {
+                    return 0;
+                }
+                return stream.Read(buffer[..(int)Math.Min(buffer.Length, remaining)]);
+            }
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                var target = origin switch
+                {
+                    SeekOrigin.Begin => offset,
+                    SeekOrigin.Current => Position + offset,
+                    SeekOrigin.End => length + offset,
+                    _ => throw new ArgumentOutOfRangeException(nameof(origin))
+                };
+                if (target < 0 || target > length)
+                {
+                    throw new IOException("Attempted to seek outside the bounded bundle node");
+                }
+                stream.Position = start + target;
+                return target;
+            }
+
+            public override void Flush() { }
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    stream.Dispose();
+                }
+                base.Dispose(disposing);
             }
         }
 
@@ -412,8 +865,23 @@ namespace AnimeStudio
 
             if (Game.Type.IsNaraka())
             {
-                m_Header.compressedBlocksInfoSize -= 0xCA;
-                m_Header.uncompressedBlocksInfoSize -= 0xCA;
+                var compressionType = (CompressionType)(m_Header.flags & ArchiveFlags.CompressionTypeMask);
+                if (compressionType == CompressionType.OodleHSR
+                    && (m_Header.flags & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
+                {
+                    // Current Naraka bundles add 3 to compression ids and store both
+                    // metadata and data blocks on independent 4 KiB pages.
+                    IsNarakaPagedBundle = true;
+                    m_Header.flags = (ArchiveFlags)(
+                        ((int)m_Header.flags & ~(int)ArchiveFlags.CompressionTypeMask)
+                        | (int)CompressionType.Lz4HC);
+                }
+                else
+                {
+                    // Older Naraka format.
+                    m_Header.compressedBlocksInfoSize -= 0xCA;
+                    m_Header.uncompressedBlocksInfoSize -= 0xCA;
+                }
             }
 
             Logger.Verbose($"Bundle header Info: {m_Header}");
@@ -458,7 +926,14 @@ namespace AnimeStudio
         private void ReadBlocksInfoAndDirectory(FileReader reader)
         {
             byte[] blocksInfoBytes;
-            if (m_Header.version >= 7 && !Game.Type.IsSRGroup())
+            long narakaBlocksInfoStart = 0;
+            var narakaBlocksInfoPayloadSize = 0;
+            if (IsNarakaPagedBundle)
+            {
+                reader.AlignStream(0x1000);
+                narakaBlocksInfoStart = reader.Position;
+            }
+            else if (m_Header.version >= 7 && !Game.Type.IsSRGroup())
             {
                 reader.AlignStream(16);
             }
@@ -509,6 +984,15 @@ namespace AnimeStudio
                 case CompressionType.Lz4: //LZ4
                 case CompressionType.Lz4HC: //LZ4HC
                     {
+                        if (IsNarakaPagedBundle)
+                        {
+                            blocksInfoUncompresseddStream = DecompressNarakaBlocksInfo(
+                                blocksInfoBytes,
+                                checked((int)uncompressedSize),
+                                out narakaBlocksInfoPayloadSize);
+                            break;
+                        }
+
                         var uncompressedBytes = ArrayPool<byte>.Shared.Rent((int)uncompressedSize);
                         try
                         {
@@ -555,11 +1039,25 @@ namespace AnimeStudio
                 Logger.Verbose($"Blocks count: {blocksInfoCount}");
                 for (int i = 0; i < blocksInfoCount; i++)
                 {
+                    var blockUncompressedSize = blocksInfoReader.ReadUInt32();
+                    var blockCompressedSize = blocksInfoReader.ReadUInt32();
+                    var storageFlags = (StorageBlockFlags)blocksInfoReader.ReadUInt16();
+                    if (IsNarakaPagedBundle)
+                    {
+                        var rawCompression = (int)(storageFlags & StorageBlockFlags.CompressionTypeMask);
+                        if (rawCompression == 6 || rawCompression == 8)
+                        {
+                            storageFlags = (StorageBlockFlags)(
+                                ((int)storageFlags & ~(int)StorageBlockFlags.CompressionTypeMask)
+                                | (rawCompression - 3));
+                        }
+                    }
+
                     m_BlocksInfo.Add(new StorageBlock
                     {
-                        uncompressedSize = blocksInfoReader.ReadUInt32(),
-                        compressedSize = blocksInfoReader.ReadUInt32(),
-                        flags = (StorageBlockFlags)blocksInfoReader.ReadUInt16()
+                        uncompressedSize = blockUncompressedSize,
+                        compressedSize = blockCompressedSize,
+                        flags = storageFlags
                     });
 
                     Logger.Verbose($"Block {i} Info: {m_BlocksInfo[i]}");
@@ -581,10 +1079,202 @@ namespace AnimeStudio
                     Logger.Verbose($"Directory {i} Info: {m_DirectoryInfo[i]}");
                 }
             }
-            if (HasBlockInfoNeedPaddingAtStart && (m_Header.flags & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
+            if (IsNarakaPagedBundle)
+            {
+                reader.Position = narakaBlocksInfoStart + narakaBlocksInfoPayloadSize;
+                reader.AlignStream(0x1000);
+            }
+            else if (HasBlockInfoNeedPaddingAtStart && (m_Header.flags & ArchiveFlags.BlockInfoNeedPaddingAtStart) != 0)
             {
                 reader.AlignStream(16);
             }
+        }
+
+        private MemoryStream DecompressNarakaBlocksInfo(
+            byte[] compressedBytes,
+            int outputCapacity,
+            out int compressedPayloadSize)
+        {
+            compressedPayloadSize = 0;
+            var uncompressedBytes = GC.AllocateUninitializedArray<byte>(outputCapacity);
+            var marker = FindNarakaBlocksInfoPadding(compressedBytes);
+            var triedSizes = new HashSet<int>();
+            var matchedSize = 0;
+
+            bool TryCandidate(int compressedSize, out MemoryStream result)
+            {
+                result = null;
+                if (compressedSize <= 0 || !triedSizes.Add(compressedSize))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    var numWrite = LZ4.Instance.Decompress(
+                        compressedBytes.AsSpan(0, compressedSize),
+                        uncompressedBytes);
+                    if (!LooksLikeNarakaBlocksInfo(uncompressedBytes.AsSpan(0, numWrite)))
+                    {
+                        return false;
+                    }
+
+                    Logger.Verbose(
+                        $"Naraka blocks info: compressed 0x{compressedSize:X}/0x{compressedBytes.Length:X}, decompressed 0x{numWrite:X}/0x{outputCapacity:X}");
+                    result = new MemoryStream(
+                        uncompressedBytes,
+                        0,
+                        numWrite,
+                        writable: false,
+                        publiclyVisible: true);
+                    matchedSize = compressedSize;
+                    return true;
+                }
+                catch (Exception ex) when (ex is ArgumentException
+                                           or IndexOutOfRangeException
+                                           or InvalidDataException)
+                {
+                    return false;
+                }
+            }
+
+            if (marker > 0 && TryCandidate(marker, out var stream))
+            {
+                compressedPayloadSize = matchedSize;
+                return stream;
+            }
+
+            // A small number of current bundles omit the recognizable footer.
+            // Their private tail is still short, so locate the LZ4 boundary by
+            // validating the decompressed Unity block-directory structure.
+            var maxPadding = Math.Min(0x200, compressedBytes.Length - 1);
+            for (var padding = 0; padding <= maxPadding; padding++)
+            {
+                if (TryCandidate(compressedBytes.Length - padding, out stream))
+                {
+                    compressedPayloadSize = matchedSize;
+                    return stream;
+                }
+            }
+
+            throw new InvalidDataException("Unable to locate Naraka blocks-info payload");
+        }
+
+        private bool LooksLikeNarakaBlocksInfo(ReadOnlySpan<byte> data)
+        {
+            try
+            {
+                var position = HasUncompressedDataHash ? 16 : 0;
+                var blocksCount = ReadInt32BigEndian(data, ref position);
+                if (blocksCount < 0 || blocksCount > 100_000)
+                {
+                    return false;
+                }
+
+                ulong totalBlockSize = 0;
+                for (var i = 0; i < blocksCount; i++)
+                {
+                    totalBlockSize += ReadUInt32BigEndian(data, ref position);
+                    _ = ReadUInt32BigEndian(data, ref position);
+                    var flags = ReadUInt16BigEndian(data, ref position);
+                    var compression = flags & (ushort)StorageBlockFlags.CompressionTypeMask;
+                    if (compression != 0 && compression != 6 && compression != 8)
+                    {
+                        return false;
+                    }
+                }
+
+                var nodesCount = ReadInt32BigEndian(data, ref position);
+                if (nodesCount < 0 || nodesCount > 100_000)
+                {
+                    return false;
+                }
+
+                ulong totalNodeSize = 0;
+                for (var i = 0; i < nodesCount; i++)
+                {
+                    _ = ReadUInt64BigEndian(data, ref position);
+                    totalNodeSize += ReadUInt64BigEndian(data, ref position);
+                    _ = ReadUInt32BigEndian(data, ref position);
+                    var terminator = data[position..].IndexOf((byte)0);
+                    if (terminator < 0)
+                    {
+                        return false;
+                    }
+                    position += terminator + 1;
+                }
+
+                return totalNodeSize <= totalBlockSize;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        private static int FindNarakaBlocksInfoPadding(ReadOnlySpan<byte> data)
+        {
+            for (var i = data.Length - 4; i >= 0; i--)
+            {
+                if (data[i] != 0x01 || data[i + 1] != 0x00)
+                {
+                    continue;
+                }
+
+                var cursor = i + 2;
+                while (cursor < data.Length && data[cursor] == 0xFF)
+                {
+                    cursor++;
+                }
+                if (cursor + 1 >= data.Length || data[cursor + 1] != 0x50)
+                {
+                    continue;
+                }
+
+                var zeroPadded = true;
+                for (var tail = cursor + 2; tail < data.Length; tail++)
+                {
+                    if (data[tail] != 0)
+                    {
+                        zeroPadded = false;
+                        break;
+                    }
+                }
+                if (zeroPadded)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static int ReadInt32BigEndian(ReadOnlySpan<byte> data, ref int position)
+        {
+            var value = BinaryPrimitives.ReadInt32BigEndian(data.Slice(position, sizeof(int)));
+            position += sizeof(int);
+            return value;
+        }
+
+        private static uint ReadUInt32BigEndian(ReadOnlySpan<byte> data, ref int position)
+        {
+            var value = BinaryPrimitives.ReadUInt32BigEndian(data.Slice(position, sizeof(uint)));
+            position += sizeof(uint);
+            return value;
+        }
+
+        private static ulong ReadUInt64BigEndian(ReadOnlySpan<byte> data, ref int position)
+        {
+            var value = BinaryPrimitives.ReadUInt64BigEndian(data.Slice(position, sizeof(ulong)));
+            position += sizeof(ulong);
+            return value;
+        }
+
+        private static ushort ReadUInt16BigEndian(ReadOnlySpan<byte> data, ref int position)
+        {
+            var value = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(position, sizeof(ushort)));
+            position += sizeof(ushort);
+            return value;
         }
 
         private void ReadBlocks(FileReader reader, Stream blocksStream)
@@ -596,6 +1286,11 @@ namespace AnimeStudio
 
             for (int i = 0; i < m_BlocksInfo.Count; i++)
             {
+                if (IsNarakaPagedBundle)
+                {
+                    reader.AlignStream(0x1000);
+                }
+
                 Logger.Verbose($"Reading block {i}...");
                 var blockInfo = m_BlocksInfo[i];
                 var compressionType = (CompressionType)(blockInfo.flags & StorageBlockFlags.CompressionTypeMask);

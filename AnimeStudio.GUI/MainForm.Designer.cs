@@ -38,7 +38,6 @@ namespace AnimeStudio.GUI
             fileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             loadFileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             loadFolderToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
-            loadFolderFullyToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             toolStripMenuItem1 = new System.Windows.Forms.ToolStripSeparator();
             extractFileToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
             extractFolderToolStripMenuItem = new System.Windows.Forms.ToolStripMenuItem();
@@ -228,7 +227,7 @@ namespace AnimeStudio.GUI
             // 
             // fileToolStripMenuItem
             // 
-            fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { loadFileToolStripMenuItem, loadFolderToolStripMenuItem, loadFolderFullyToolStripMenuItem, toolStripMenuItem1, extractFileToolStripMenuItem, extractFolderToolStripMenuItem, toolStripSeparator6, resetToolStripMenuItem, abortStripMenuItem, toolStripSeparator4, exitToolStripMenuItem });
+            fileToolStripMenuItem.DropDownItems.AddRange(new System.Windows.Forms.ToolStripItem[] { loadFileToolStripMenuItem, loadFolderToolStripMenuItem, toolStripMenuItem1, extractFileToolStripMenuItem, extractFolderToolStripMenuItem, toolStripSeparator6, resetToolStripMenuItem, abortStripMenuItem, toolStripSeparator4, exitToolStripMenuItem });
             fileToolStripMenuItem.Name = "fileToolStripMenuItem";
             fileToolStripMenuItem.Size = new System.Drawing.Size(71, 38);
             fileToolStripMenuItem.Text = "File";
@@ -244,15 +243,8 @@ namespace AnimeStudio.GUI
             // 
             loadFolderToolStripMenuItem.Name = "loadFolderToolStripMenuItem";
             loadFolderToolStripMenuItem.Size = new System.Drawing.Size(287, 44);
-            loadFolderToolStripMenuItem.Text = "Load folder lazily";
+            loadFolderToolStripMenuItem.Text = "Load folder";
             loadFolderToolStripMenuItem.Click += loadFolder_Click;
-            //
-            // loadFolderFullyToolStripMenuItem
-            //
-            loadFolderFullyToolStripMenuItem.Name = "loadFolderFullyToolStripMenuItem";
-            loadFolderFullyToolStripMenuItem.Size = new System.Drawing.Size(287, 44);
-            loadFolderFullyToolStripMenuItem.Text = "Load folder fully (legacy)";
-            loadFolderFullyToolStripMenuItem.Click += loadFolderFully_Click;
             //
             // toolStripMenuItem1
             // 
@@ -1586,7 +1578,6 @@ namespace AnimeStudio.GUI
         private System.Windows.Forms.TextBox listSearch;
         private System.Windows.Forms.ToolStripMenuItem loadFileToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem loadFolderToolStripMenuItem;
-        private System.Windows.Forms.ToolStripMenuItem loadFolderFullyToolStripMenuItem;
         private System.Windows.Forms.ListView assetListView;
         private System.Windows.Forms.ColumnHeader columnHeaderName;
         private System.Windows.Forms.ColumnHeader columnHeaderSize;

@@ -1,4 +1,5 @@
 dist/*
+.vscode/
 saved_transformation_options.xml
 
 ## Ignore Visual Studio temporary files, build results, and

@@ -1,5 +1,9 @@
 # Anime Studio
 
+本 EIEM fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
+发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。
+检查失败不会影响浏览、解包或导出，程序不会自行覆盖安装。
+
 ## Asset extraction tool for unity games !
 
 ![image](https://github.com/user-attachments/assets/fc1decdc-a589-43a2-b965-2d8151d0975f)
@@ -12,8 +16,7 @@ It comes as a GUI and a CLI, both in the same download. The GUI is what you want
 
 # How do I download this ?
 
-- **[.NET 10 Build (Recommended - Latest)](https://nightly.link/Escartem/AnimeStudio/workflows/build/master/AnimeStudio-net10.zip)** ✨
-- **[.NET 9 Build (Stable)](https://nightly.link/Escartem/AnimeStudio/workflows/build/master/AnimeStudio-net9.zip)**
+- **[EIEM AnimeStudio Releases](https://github.com/ssice-a/AnimeStudio/releases)**：下载与已安装 .NET Desktop Runtime 对应的 `net9.0-windows` 或 `net10.0-windows` 压缩包。
 
 Both builds are Windows x64 only and need the matching [.NET Desktop Runtime](https://dotnet.microsoft.com/download/dotnet) installed. Unzip anywhere and run `AnimeStudio.GUI.exe` or `AnimeStudio.CLI.exe`.
 
