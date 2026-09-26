@@ -1987,10 +1987,11 @@ namespace AnimeStudio.GUI
                     endfieldSelectedPrefabRoot = root;
                     lastSelectedItem = new AssetItem(root) { Container = file.Container };
                     assetInfoLabel.Text = $"Prefab\n{file.Container}\nSource: {source}\n" +
-                                          $"Root PathID: {root.m_PathID}";
+                                          $"Root: {root.Name}";
                     assetInfoLabel.Visible = displayInfo.Checked;
                     ResetEndfieldPreviewSurface();
-                    PreviewText(EndfieldPrefabDocument.Build(file, root));
+                    PreviewText(EndfieldPrefabDocument.Build(
+                        file, root, endfieldVirtualAssetRecords, endfieldDependencyIndex));
                     if (tabControl2.SelectedIndex == 1)
                         dumpTextBox.Text = DumpAsset(root);
                     StatusStripUpdate($"Prefab structure: {file.Container}");

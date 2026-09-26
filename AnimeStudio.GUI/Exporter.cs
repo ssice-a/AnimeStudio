@@ -623,7 +623,8 @@ namespace AnimeStudio.GUI
                     throw new InvalidDataException("Prefab container escapes the selected output directory.");
 
                 Directory.CreateDirectory(Path.GetDirectoryName(structurePath)!);
-                File.WriteAllText(structurePath, EndfieldPrefabDocument.Build(file, root));
+                File.WriteAllText(structurePath, EndfieldPrefabDocument.Build(
+                    file, root, assetRecords, dependencies));
 
                 if (!includeResources)
                     return true;

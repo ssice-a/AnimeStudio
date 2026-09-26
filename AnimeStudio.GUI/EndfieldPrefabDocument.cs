@@ -27,17 +27,21 @@ namespace AnimeStudio.GUI
                 .FirstOrDefault();
         }
 
-        public static string Build(VirtualAssetFile file, GameObject root)
+        public static string Build(VirtualAssetFile file, GameObject root,
+            IReadOnlyList<VirtualAssetRecord> records = null,
+            EndfieldBundleDependencyIndex dependencies = null)
         {
             var builder = new StringBuilder(32 * 1024);
+            var transformPaths = BuildTransformPaths(root);
+            var resolver = new LogicalAssetResolver(records, dependencies);
             builder.AppendLine($"Prefab: {file.Container}");
-            builder.AppendLine($"Root: {Describe(root)}");
+            builder.AppendLine($"Root: {Describe(root, transformPaths)}");
             builder.AppendLine($"Source: {FindSource(file)}");
             builder.AppendLine();
             builder.AppendLine("Hierarchy and component references:");
 
             var visited = new HashSet<long>();
-            WriteGameObject(builder, root, 0, visited);
+            WriteGameObject(builder, root, 0, visited, transformPaths, resolver);
             builder.AppendLine();
             builder.AppendLine($"GameObjects: {visited.Count:N0}");
             builder.AppendLine("Note: this is the serialized Prefab object graph, not a byte-for-byte Unity Editor source .prefab file.");
@@ -71,46 +75,45 @@ namespace AnimeStudio.GUI
         }
 
         private static void WriteGameObject(StringBuilder builder, GameObject gameObject, int depth,
-            HashSet<long> visited)
+            HashSet<long> visited, IReadOnlyDictionary<Transform, string> transformPaths,
+            LogicalAssetResolver resolver)
         {
             if (gameObject == null || depth > 512 || !visited.Add(gameObject.m_PathID))
                 return;
 
             var indent = new string(' ', depth * 2);
-            builder.Append(indent).Append("- ").AppendLine(Describe(gameObject));
+            builder.Append(indent).Append("- ").AppendLine(Describe(gameObject, transformPaths));
 
             foreach (var componentPtr in gameObject.m_Components)
             {
                 if (!componentPtr.TryGet(out var component))
                     continue;
-                builder.Append(indent).Append("  [").Append(component.type).Append("] PathID=")
-                    .Append(component.m_PathID);
+                builder.Append(indent).Append("  [").Append(component.type).Append(']');
 
                 switch (component)
                 {
                     case SkinnedMeshRenderer skinned:
-                        AppendMeshAndMaterials(builder, skinned.m_Mesh, skinned.m_Materials);
+                        AppendMeshAndMaterials(builder, skinned.m_Mesh, skinned.m_Materials, resolver);
                         builder.Append(" Bones=").Append(skinned.m_Bones?.Count ?? 0);
                         if (skinned.m_RootBone.TryGet(out var rootBone))
-                            builder.Append(" RootBone=").Append(rootBone.Name)
-                                .Append("@").Append(rootBone.m_PathID);
+                            builder.Append(" RootBone=").Append(GetTransformPath(rootBone, transformPaths));
                         break;
                     case MeshRenderer renderer:
                         if (gameObject.m_MeshFilter?.m_Mesh != null)
                             AppendMeshAndMaterials(builder, gameObject.m_MeshFilter.m_Mesh,
-                                renderer.m_Materials);
+                                renderer.m_Materials, resolver);
                         else
-                            AppendMaterials(builder, renderer.m_Materials);
+                            AppendMaterials(builder, renderer.m_Materials, resolver);
                         break;
                     case MeshFilter filter:
                         if (filter.m_Mesh.TryGet(out var mesh))
-                            builder.Append(" Mesh=").Append(mesh.Name).Append("@").Append(mesh.m_PathID);
+                            builder.Append(" Mesh=").Append(resolver.Describe(mesh));
                         break;
                     case Animator animator:
                         if (animator.m_Avatar.TryGet(out var avatar))
-                            builder.Append(" Avatar=").Append(avatar.Name).Append("@").Append(avatar.m_PathID);
+                            builder.Append(" Avatar=").Append(resolver.Describe(avatar));
                         if (animator.m_Controller.TryGet(out var controller))
-                            builder.Append(" Controller=").Append(controller.Name).Append("@").Append(controller.m_PathID);
+                            builder.Append(" Controller=").Append(resolver.Describe(controller));
                         break;
                 }
                 builder.AppendLine();
@@ -123,20 +126,22 @@ namespace AnimeStudio.GUI
             {
                 if (childPtr.TryGet(out var childTransform) &&
                     childTransform.m_GameObject.TryGet(out var childObject))
-                    WriteGameObject(builder, childObject, depth + 1, visited);
+                    WriteGameObject(builder, childObject, depth + 1, visited,
+                        transformPaths, resolver);
             }
         }
 
         private static void AppendMeshAndMaterials(StringBuilder builder, PPtr<Mesh> meshPtr,
-            List<PPtr<Material>> materials)
+            List<PPtr<Material>> materials, LogicalAssetResolver resolver)
         {
             if (meshPtr != null && meshPtr.TryGet(out var mesh))
-                builder.Append(" Mesh=").Append(mesh.Name).Append("@").Append(mesh.m_PathID)
+                builder.Append(" Mesh=").Append(resolver.Describe(mesh))
                     .Append(" SubMeshes=").Append(mesh.m_SubMeshes?.Count ?? 0);
-            AppendMaterials(builder, materials);
+            AppendMaterials(builder, materials, resolver);
         }
 
-        private static void AppendMaterials(StringBuilder builder, List<PPtr<Material>> materials)
+        private static void AppendMaterials(StringBuilder builder, List<PPtr<Material>> materials,
+            LogicalAssetResolver resolver)
         {
             if (materials == null || materials.Count == 0)
                 return;
@@ -145,9 +150,9 @@ namespace AnimeStudio.GUI
             {
                 if (i > 0) builder.Append(", ");
                 if (materials[i].TryGet(out var material))
-                    builder.Append(material.Name).Append("@").Append(material.m_PathID);
+                    builder.Append(resolver.Describe(material));
                 else
-                    builder.Append("missing@").Append(materials[i].m_PathID);
+                    builder.Append("missing");
             }
             builder.Append(']');
         }
@@ -155,10 +160,105 @@ namespace AnimeStudio.GUI
         private static bool IsRoot(GameObject gameObject) =>
             gameObject?.m_Transform != null && gameObject.m_Transform.m_Father.IsNull;
 
-        private static string Describe(GameObject gameObject) => gameObject == null
+        private static string Describe(GameObject gameObject,
+            IReadOnlyDictionary<Transform, string> transformPaths) => gameObject == null
             ? "[not found]"
-            : $"{gameObject.m_Name} [GameObject] PathID={gameObject.m_PathID} " +
-              $"CAB={gameObject.assetsFile?.fileName} Root={IsRoot(gameObject)} HasModel={gameObject.HasModel()}";
+            : $"{gameObject.m_Name} [GameObject] " +
+              $"Path={GetTransformPath(gameObject.m_Transform, transformPaths)} " +
+              $"Root={IsRoot(gameObject)} HasModel={gameObject.HasModel()}";
+
+        private static string GetTransformPath(Transform transform,
+            IReadOnlyDictionary<Transform, string> transformPaths)
+        {
+            if (transform != null && transformPaths.TryGetValue(transform, out var path))
+                return string.IsNullOrEmpty(path) ? "/" : path;
+            return transform?.Name ?? "?";
+        }
+
+        private static Dictionary<Transform, string> BuildTransformPaths(GameObject prefabRoot)
+        {
+            var paths = new Dictionary<Transform, string>();
+            void Visit(Transform transform, string path)
+            {
+                if (transform == null || paths.ContainsKey(transform)) return;
+                paths.Add(transform, path);
+                foreach (var child in transform.m_Children ?? Enumerable.Empty<PPtr<Transform>>())
+                {
+                    if (!child.TryGet(out var childTransform) ||
+                        !childTransform.m_GameObject.TryGet(out var childObject))
+                        continue;
+                    var childPath = string.IsNullOrEmpty(path)
+                        ? childObject.m_Name
+                        : path + "/" + childObject.m_Name;
+                    Visit(childTransform, childPath);
+                }
+            }
+            Visit(prefabRoot?.m_Transform, string.Empty);
+            return paths;
+        }
+
+        private sealed class LogicalAssetResolver
+        {
+            private readonly IReadOnlyList<VirtualAssetRecord> records;
+            private readonly EndfieldBundleDependencyIndex dependencies;
+
+            public LogicalAssetResolver(IReadOnlyList<VirtualAssetRecord> records,
+                EndfieldBundleDependencyIndex dependencies)
+            {
+                this.records = records ?? Array.Empty<VirtualAssetRecord>();
+                this.dependencies = dependencies;
+            }
+
+            public string Describe(AnimeStudio.Object asset)
+            {
+                if (asset == null)
+                    return "missing";
+
+                var logical = Resolve(asset);
+                if (string.IsNullOrWhiteSpace(logical))
+                    return string.IsNullOrWhiteSpace(asset.Name) ? "unnamed" : asset.Name;
+                return string.IsNullOrWhiteSpace(asset.Name) ||
+                       logical.EndsWith(" :: " + asset.Name, StringComparison.Ordinal)
+                    ? logical
+                    : asset.Name + " [" + logical + "]";
+            }
+
+            private string Resolve(AnimeStudio.Object asset)
+            {
+                var type = asset.type.ToString();
+                var candidates = records.Where(x => x.PathId == asset.m_PathID &&
+                        string.Equals(x.Type, type, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (candidates.Length == 0)
+                    return null;
+
+                var cab = Path.GetFileName(asset.assetsFile?.fileName ?? string.Empty);
+                if (!string.IsNullOrWhiteSpace(cab) && dependencies != null)
+                {
+                    var cabMatches = candidates.Where(x => dependencies.GetCabNames(x.Source)
+                        .Contains(cab, StringComparer.OrdinalIgnoreCase)).ToArray();
+                    if (cabMatches.Length == 1)
+                        return Format(cabMatches[0]);
+                    candidates = cabMatches.Length > 0 ? cabMatches : candidates;
+                }
+
+                var named = candidates.Where(x => string.Equals(x.Name, asset.Name,
+                    StringComparison.OrdinalIgnoreCase)).ToArray();
+                return Format(named.Length == 1 ? named[0] :
+                    candidates.Length == 1 ? candidates[0] : null);
+            }
+
+            private static string Format(VirtualAssetRecord record)
+            {
+                if (record == null) return null;
+                var path = (record.Container ?? string.Empty).Replace('\\', '/');
+                return string.IsNullOrWhiteSpace(record.Name) ||
+                       string.Equals(record.Name, Path.GetFileNameWithoutExtension(path),
+                           StringComparison.OrdinalIgnoreCase)
+                    ? path
+                    : path + " :: " + record.Name;
+            }
+        }
 
         private static string FindSource(VirtualAssetFile file) =>
             file.Records.Select(x => x.Source).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
