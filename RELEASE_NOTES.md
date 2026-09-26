@@ -1,7 +1,8 @@
-# AnimeStudio v1.2.0
+# AnimeStudio v1.2.1
 
-浏览和导出《明日方舟：终末地》游戏资源，为 EIEM Mod 制作准备源包。
+- Prefab previews no longer show Unity internal PathID, CAB identifiers, or hash-style references.
+- GameObjects show hierarchy paths; meshes, materials, avatars, and controllers prefer readable logical asset paths.
+- Bone references show hierarchy paths. If an asset cannot be resolved, the preview keeps its name without exposing an internal numeric ID.
+- GUI previews and exported Prefab structure files use the same readable format.
 
-此版本的 EIEM 源包可直接交给 [EIEM Blender v0.34.0](https://github.com/ssice-a/EIEM-blender/releases/tag/v0.34.0) 编辑，并与 [EIEM v1.2.0](https://github.com/ssice-a/EIEM/releases/tag/v1.2.0) 配套使用。之前导出的 EIEM 模型和骨架源包需要重新导出。
-
-**安装：**根据本机 .NET Desktop Runtime 下载 `net9.0-windows` 或 `net10.0-windows` 包，解压后运行 `AnimeStudio.GUI.exe`。使用说明见 [README](https://github.com/ssice-a/AnimeStudio#readme)。
+**Install:** download the `net9.0-windows` or `net10.0-windows` package matching the installed .NET Desktop Runtime, extract it, and run `AnimeStudio.GUI.exe`.
