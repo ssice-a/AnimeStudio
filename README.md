@@ -1,5 +1,7 @@
 # Anime Studio
 
+EIEM 包导出当前写入 EIEMESH v6 和 EIESKEL v2。旧包需要重新导出后再交给当前 Blender 插件和 DLL 使用。
+
 本 EIEM fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
 发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。
 检查失败不会影响浏览、解包或导出，程序不会自行覆盖安装。

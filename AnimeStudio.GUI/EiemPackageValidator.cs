@@ -15,7 +15,7 @@ namespace AnimeStudio.GUI
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
             RequireMagic(reader, "EIEMESH\0");
             var version = reader.ReadInt32();
-            if (version != 2 && version != 3)
+            if (version != 6)
                 throw new InvalidDataException($"Unsupported EIEM format version {version} in {path}.");
             _ = reader.ReadString(); // coordinate space
             _ = reader.ReadString(); // source path
@@ -31,10 +31,28 @@ namespace AnimeStudio.GUI
             var bindPoses = Count(reader, path);
             Skip(reader, checked((long)bindPoses * sizeof(float) * 16), path);
             SkipUInts(reader, path);
-            if (version >= 3)
+
+            var bonePaths = Count(reader, path);
+            for (var i = 0; i < bonePaths; i++) _ = reader.ReadString();
+
+            var indexPaths = Count(reader, path);
+            for (var i = 0; i < indexPaths; i++) _ = reader.ReadString();
+            var sources = Count(reader, path);
+            if (sources != bindPoses) throw new InvalidDataException("Mesh source palette mismatch");
+            for (var i = 0; i < sources; i++)
             {
-                var bonePaths = Count(reader, path);
-                for (var i = 0; i < bonePaths; i++) _ = reader.ReadString();
+                _ = reader.ReadString(); _ = reader.ReadString(); _ = reader.ReadUInt32();
+            }
+            var candidateSlots = Count(reader, path);
+            if (candidateSlots != bindPoses) throw new InvalidDataException("Mesh donor palette mismatch");
+            for (var i = 0; i < candidateSlots; i++)
+            {
+                var candidates = Count(reader, path);
+                if (candidates < 1 || candidates > 1024) throw new InvalidDataException("Missing mesh donor");
+                for (var j = 0; j < candidates; j++)
+                {
+                    _ = reader.ReadString(); _ = reader.ReadString(); _ = reader.ReadUInt32();
+                }
             }
             SkipBlendShapes(reader, path);
             RequireEnd(stream, path);
@@ -45,7 +63,7 @@ namespace AnimeStudio.GUI
             using var stream = File.OpenRead(path);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
             RequireMagic(reader, "EIESKEL\0");
-            RequireVersion(reader.ReadInt32(), 1, path);
+            RequireVersion(reader.ReadInt32(), 2, path);
             _ = reader.ReadString(); // coordinate space
             var nodes = Count(reader, path);
             for (var i = 0; i < nodes; i++)
@@ -55,6 +73,9 @@ namespace AnimeStudio.GUI
             }
             var boneCount = Count(reader, path);
             Skip(reader, checked((long)boneCount * sizeof(int) + sizeof(int)), path);
+            if (Count(reader, path) != nodes) throw new InvalidDataException("Skeleton provenance mismatch");
+            for (var i = 0; i < nodes; i++)
+                if (reader.ReadByte() > 1) throw new InvalidDataException("Invalid skeleton provenance");
             RequireEnd(stream, path);
         }
 

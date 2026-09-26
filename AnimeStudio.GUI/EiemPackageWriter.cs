@@ -15,8 +15,8 @@ namespace AnimeStudio.GUI
     /// </summary>
     internal sealed class EiemPackageWriter
     {
-        private const int MeshVersion = 3;
-        private const int SkeletonVersion = 1;
+        private const int MeshVersion = 6;
+        private const int SkeletonVersion = 2;
         private readonly IReadOnlyList<VirtualAssetRecord> records;
         private readonly EndfieldBundleDependencyIndex dependencies;
         private readonly string vfsFingerprint;
@@ -389,6 +389,24 @@ namespace AnimeStudio.GUI
             writer.Write(bonePaths?.Count ?? 0);
             foreach (var bonePath in bonePaths ?? Array.Empty<string>())
                 writer.Write(bonePath ?? string.Empty);
+            // Unified EIEMESH v6: each native slot is its own exact donor.
+            writer.Write(0); // hierarchy-index paths are optional authoring metadata
+            var slots = mesh.m_BindPose?.Length ?? 0;
+            writer.Write(slots);
+            for (var slot = 0; slot < slots; slot++)
+            {
+                writer.Write(source ?? string.Empty);
+                writer.Write(mesh.Name ?? string.Empty);
+                writer.Write((uint)slot);
+            }
+            writer.Write(slots);
+            for (var slot = 0; slot < slots; slot++)
+            {
+                writer.Write(1); // one donor per original slot
+                writer.Write(source ?? string.Empty);
+                writer.Write(mesh.Name ?? string.Empty);
+                writer.Write((uint)slot);
+            }
             WriteBlendShapes(writer, mesh.m_Shapes);
             binaryFiles.Add(path);
         }
@@ -421,9 +439,11 @@ namespace AnimeStudio.GUI
 
             // One Prefab hierarchy is one skeleton resource. Compact renderer
             // palettes belong to Mesh bindings and are written as bone paths
-            // in EIEMESH v3 rather than producing one skeleton per Mesh.
+            // in EIEMESH v6 rather than producing one skeleton per Mesh.
             writer.Write(0);
             writer.Write(-1);
+            writer.Write(nodes.Count);
+            foreach (var node in nodes) writer.Write((byte)1); // game-owned source nodes
             binaryFiles.Add(path);
         }
 
