@@ -39,9 +39,9 @@ package with no FBX or OBJ conversion step:
   never Bundle hashes or runtime pointers.
 
 The runtime and cross-Prefab binding contracts are maintained in
-[ssice-a/EIEM](https://github.com/ssice-a/EIEM/tree/main/docs). The Blender
+[ssice-a/EFF](https://github.com/ssice-a/EFF/tree/main/docs). The Blender
 authoring implementation is maintained in
-[ssice-a/EIEM-blender](https://github.com/ssice-a/EIEM-blender).
+[ssice-a/EFF-blender](https://github.com/ssice-a/EFF-blender).
 
 ## Blender status
 
@@ -65,7 +65,7 @@ Original packed tangent frames must be decoded, not replaced by UV-based
 recalculation. A package round trip alone does not prove that the source AB's
 channels were all exported. The EFF repository's `docs/vertex-data-contract.md`
 records the source-data tests and the distinction between preservation and
-generation: [vertex data contract](https://github.com/ssice-a/EIEM/blob/main/docs/vertex-data-contract.md).
+generation: [vertex data contract](https://github.com/ssice-a/EFF/blob/main/docs/vertex-data-contract.md).
 
 Mesh, Material, and Texture sections generated from a resolved game asset
 include their logical target identity for authoring. The shared resource files
