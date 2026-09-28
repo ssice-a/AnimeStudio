@@ -18,7 +18,7 @@ namespace AnimeStudio.GUI
         private static HttpClient CreateClient()
         {
             var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("EIEM-AnimeStudio-UpdateCheck/1.0");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("EFF-AnimeStudio-UpdateCheck/1.0");
             client.DefaultRequestHeaders.Accept.Add(
                 new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             return client;

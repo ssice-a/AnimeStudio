@@ -1,4 +1,4 @@
-﻿
+
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using OpenTK.Graphics.OpenGL;
@@ -152,7 +152,7 @@ namespace AnimeStudio.GUI
             filterTypeToolStripMenuItem.DropDownItems.Add(endfieldVirtualPathsToolStripMenuItem);
 
             formatSpecificToolStripMenuItem.Enabled = true;
-            var eiemMenu = new ToolStripMenuItem("EIEM");
+            var eiemMenu = new ToolStripMenuItem("EFF");
             eiemMenu.DropDownItems.Add("All assets", null,
                 (_, _) => ExportAssets(ExportFilter.All, ExportType.Eiem));
             eiemMenu.DropDownItems.Add("Selected assets", null,
@@ -162,15 +162,15 @@ namespace AnimeStudio.GUI
             eiemMenu.DropDownItems.Add(new ToolStripSeparator());
             eiemMenu.DropDownItems.Add("Checked Prefab structure...", null,
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: false));
-            eiemMenu.DropDownItems.Add("Checked Prefab as EIEM mod package...", null,
+            eiemMenu.DropDownItems.Add("Checked Prefab as EFF mod package...", null,
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: true));
             formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
 
             var importJson = new ToolStripMenuItem
             {
                 Name = "importEiemJsonToolStripMenuItem",
-                Text = "Export EIEM from JSON...",
-                ToolTipText = "Use a runtime or EIEM JSON selection file to export matching assets"
+                Text = "Export EFF from JSON...",
+                ToolTipText = "Use a runtime or EFF JSON selection file to export matching assets"
             };
             importJson.Click += importEiemJsonToolStripMenuItem_Click;
             fileToolStripMenuItem.DropDownItems.Insert(3, importJson);
@@ -185,9 +185,9 @@ namespace AnimeStudio.GUI
         {
             using var dialog = new OpenFileDialog
             {
-                Filter = "EIEM or runtime JSON|*.json|All files|*.*",
+                Filter = "EFF or runtime JSON|*.json|All files|*.*",
                 Multiselect = false,
-                Title = "Select an EIEM/runtime JSON selection file"
+                Title = "Select an EFF/runtime JSON selection file"
             };
             if (dialog.ShowDialog(this) != DialogResult.OK)
                 return;
@@ -199,13 +199,13 @@ namespace AnimeStudio.GUI
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, $"Unable to read JSON: {ex.Message}", "EIEM JSON",
+                MessageBox.Show(this, $"Unable to read JSON: {ex.Message}", "EFF JSON",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             if (selectors.Count == 0)
             {
-                MessageBox.Show(this, "The JSON contains no asset selectors.", "EIEM JSON",
+                MessageBox.Show(this, "The JSON contains no asset selectors.", "EFF JSON",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -213,7 +213,7 @@ namespace AnimeStudio.GUI
             var folder = new OpenFolderDialog
             {
                 InitialFolder = saveDirectoryBackup,
-                Title = "Select EIEM export folder"
+                Title = "Select EFF export folder"
             };
             if (folder.ShowDialog(this) != DialogResult.OK)
                 return;
@@ -254,7 +254,7 @@ namespace AnimeStudio.GUI
                 catch (Exception ex)
                 {
                     skipped += batch.Count();
-                    Logger.Error($"EIEM JSON export failed for {first.Selector.Name}: {ex.Message}");
+                    Logger.Error($"EFF JSON export failed for {first.Selector.Name}: {ex.Message}");
                 }
             }
             foreach (var selection in resolved.Where(x => x.Record == null))
@@ -277,10 +277,10 @@ namespace AnimeStudio.GUI
                 catch (Exception ex)
                 {
                     skipped++;
-                    Logger.Error($"EIEM JSON export failed for {selection.Selector.Name}: {ex.Message}");
+                    Logger.Error($"EFF JSON export failed for {selection.Selector.Name}: {ex.Message}");
                 }
             }
-            StatusStripUpdate($"Finished EIEM JSON export: {exported} exported, {skipped} skipped" +
+            StatusStripUpdate($"Finished EFF JSON export: {exported} exported, {skipped} skipped" +
                 (ambiguous > 0 ? $", {ambiguous} ambiguous (not guessed)." : "."));
             if (exported > 0 && Properties.Settings.Default.openAfterExport)
                 Studio.OpenFolderInExplorer(folder.Folder);
@@ -423,7 +423,7 @@ namespace AnimeStudio.GUI
             {
                 if (candidateCounts[index] <= 1)
                     continue;
-                Logger.Warning($"EIEM selector is ambiguous and will not be guessed: " +
+                Logger.Warning($"EFF selector is ambiguous and will not be guessed: " +
                     $"{selectors[index].Type}:{selectors[index].Name} " +
                     $"({candidateCounts[index]} index matches). Runtime path/container is required.");
                 records[index] = null;
@@ -3645,13 +3645,13 @@ namespace AnimeStudio.GUI
                 var records = GetVirtualExportRecords(type);
                 if (records.Count == 0)
                 {
-                    StatusStripUpdate("No virtual assets selected for EIEM export");
+                    StatusStripUpdate("No virtual assets selected for EFF export");
                     return;
                 }
                 var virtualFolderDialog = new OpenFolderDialog
                 {
                     InitialFolder = saveDirectoryBackup,
-                    Title = "Select EIEM export folder"
+                    Title = "Select EFF export folder"
                 };
                 if (virtualFolderDialog.ShowDialog(this) != DialogResult.OK)
                     return;
@@ -3770,9 +3770,9 @@ namespace AnimeStudio.GUI
             var files = GetCheckedEndfieldPrefabFiles();
             if (files.Count == 0)
             {
-                const string message = "No .prefab file is checked. The EIEM package exporter only accepts logical .prefab files; character-data .asset files are not Prefabs.\n\nCheck chr_0028_wulfa_postmodel.prefab, then run this command again.";
+                const string message = "No .prefab file is checked. The EFF package exporter only accepts logical .prefab files; character-data .asset files are not Prefabs.\n\nCheck chr_0028_wulfa_postmodel.prefab, then run this command again.";
                 StatusStripUpdate(message);
-                MessageBox.Show(this, message, "EIEM Prefab export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, message, "EFF Prefab export", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
@@ -3780,7 +3780,7 @@ namespace AnimeStudio.GUI
             {
                 InitialFolder = saveDirectoryBackup,
                 Title = includeResources
-                    ? "Export Prefab as EIEM mod package"
+                    ? "Export Prefab as EFF mod package"
                     : "Export Prefab structure"
             };
             if (folder.ShowDialog(this) != DialogResult.OK)
@@ -3788,7 +3788,7 @@ namespace AnimeStudio.GUI
             saveDirectoryBackup = folder.Folder;
 
             StatusStripUpdate(includeResources
-                ? $"Exporting {files.Count:N0} checked Prefab(s) as EIEM mod packages..."
+                ? $"Exporting {files.Count:N0} checked Prefab(s) as EFF mod packages..."
                 : $"Exporting {files.Count:N0} checked Prefab(s)...");
             var exported = 0;
             foreach (var file in files)
@@ -3828,11 +3828,11 @@ namespace AnimeStudio.GUI
                 catch (Exception ex)
                 {
                     skipped += batch.Count();
-                    Logger.Error($"EIEM virtual export failed for {batch.Key}: {ex.Message}");
+                    Logger.Error($"EFF virtual export failed for {batch.Key}: {ex.Message}");
                 }
-                StatusStripUpdate($"EIEM export: {exported} exported, {skipped} skipped.");
+                StatusStripUpdate($"EFF export: {exported} exported, {skipped} skipped.");
             }
-            StatusStripUpdate($"Finished EIEM export: {exported} exported, {skipped} skipped.");
+            StatusStripUpdate($"Finished EFF export: {exported} exported, {skipped} skipped.");
             if (exported > 0 && Properties.Settings.Default.openAfterExport)
                 Studio.OpenFolderInExplorer(output);
         }

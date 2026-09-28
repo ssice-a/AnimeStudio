@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using System;
 using System.Buffers;
@@ -517,7 +517,7 @@ namespace AnimeStudio.GUI
         }
 
         /// <summary>
-        /// Exports one asset as an EIEM exchange directory.  The directory is
+        /// Exports one asset as an EFF exchange directory.  The directory is
         /// deliberately self-contained so Blender tooling does not need to
         /// understand Unity's serialized-file layout.
         /// </summary>
@@ -531,7 +531,7 @@ namespace AnimeStudio.GUI
             var manifest = new Dictionary<string, object>
             {
                 ["schema"] = 1,
-                ["format"] = "EIEM",
+                ["format"] = "EFF",
                 ["asset"] = item.Text ?? string.Empty,
                 ["type"] = item.TypeString ?? item.Type.ToString(),
                 ["pathId"] = item.m_PathID,
@@ -589,20 +589,20 @@ namespace AnimeStudio.GUI
                         break;
                 }
 
-                var manifestPath = Path.Combine(folder, "eiem.json");
+                var manifestPath = Path.Combine(folder, "eff.json");
                 File.WriteAllText(manifestPath, JsonConvert.SerializeObject(manifest, Formatting.Indented));
                 return true;
             }
             catch
             {
-                Logger.Error($"EIEM export failed for {item.Text}");
+                Logger.Error($"EFF export failed for {item.Text}");
                 return false;
             }
         }
 
         /// <summary>
         /// Exports the logical Prefab object graph and, optionally, the shared
-        /// EIEM authoring package consumed by Blender and the runtime plugin.
+        /// EFF authoring package consumed by Blender and the runtime plugin.
         /// </summary>
         internal static bool ExportEndfieldPrefab(VirtualAssetFile file, GameObject root,
             string outputRoot, bool includeResources, IReadOnlyList<VirtualAssetRecord> assetRecords,
@@ -630,7 +630,7 @@ namespace AnimeStudio.GUI
                     return true;
 
                 var packageFolder = Path.Combine(Path.GetDirectoryName(structurePath)!,
-                    Path.GetFileNameWithoutExtension(file.Name) + ".eiem");
+                    Path.GetFileNameWithoutExtension(file.Name) + ".eff");
                 return new EiemPackageWriter(assetRecords, dependencies, vfsFingerprint)
                     .Write(file, root, packageFolder);
             }

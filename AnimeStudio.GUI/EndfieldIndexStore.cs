@@ -22,7 +22,7 @@ namespace AnimeStudio.GUI
     internal static class EndfieldIndexStore
     {
         public const int FormatVersion = 3;
-        private const string Magic = "EIEM_END_FIELD_INDEX";
+        private const string Magic = "EFF_END_FIELD_INDEX";
         private const byte EndRecord = 0;
         private const byte AssetRecord = 1;
         private const byte CabRecord = 2;
@@ -74,10 +74,10 @@ namespace AnimeStudio.GUI
                 4 * 1024 * 1024, FileOptions.SequentialScan);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
             if (!string.Equals(reader.ReadString(), Magic, StringComparison.Ordinal))
-                throw new InvalidDataException("This is not an EIEM Endfield index.");
+                throw new InvalidDataException("This is not an EFF Endfield index.");
             var version = reader.ReadInt32();
             if (version != FormatVersion)
-                throw new InvalidDataException($"Unsupported EIEM Endfield index version: {version}.");
+                throw new InvalidDataException($"Unsupported EFF Endfield index version: {version}.");
             var fingerprint = reader.ReadString();
             long storedAssetCount = -1;
             long storedCabCount = -1;
@@ -110,14 +110,14 @@ namespace AnimeStudio.GUI
                         dependencies.AddCab(cabName, cabSource, cabDependencies);
                         break;
                     default:
-                        throw new InvalidDataException("Unknown EIEM Endfield index record.");
+                        throw new InvalidDataException("Unknown EFF Endfield index record.");
                 }
             }
 
         Finished:
             assets.FinishLoading(sortRecords: false);
             if (storedAssetCount != assets.AssetCount || storedCabCount != dependencies.CabCount)
-                throw new InvalidDataException("The EIEM Endfield index is incomplete or corrupt.");
+                throw new InvalidDataException("The EFF Endfield index is incomplete or corrupt.");
             return new LoadedEndfieldIndex(
                 assets, dependencies, fingerprint, storedAssetCount, storedCabCount);
         }
@@ -170,7 +170,7 @@ namespace AnimeStudio.GUI
                         continue;
                     }
 
-                    throw new InvalidDataException("Unknown EIEM Endfield index record.");
+                    throw new InvalidDataException("Unknown EFF Endfield index record.");
                 }
             }
 
@@ -216,7 +216,7 @@ namespace AnimeStudio.GUI
                         continue;
                     }
 
-                    throw new InvalidDataException("Unknown EIEM Endfield index record.");
+                    throw new InvalidDataException("Unknown EFF Endfield index record.");
                 }
             }
 
@@ -229,10 +229,10 @@ namespace AnimeStudio.GUI
         private static string ReadHeader(BinaryReader reader)
         {
             if (!string.Equals(reader.ReadString(), Magic, StringComparison.Ordinal))
-                throw new InvalidDataException("This is not an EIEM Endfield index.");
+                throw new InvalidDataException("This is not an EFF Endfield index.");
             var version = reader.ReadInt32();
             if (version != FormatVersion)
-                throw new InvalidDataException($"Unsupported EIEM Endfield index version: {version}.");
+                throw new InvalidDataException($"Unsupported EFF Endfield index version: {version}.");
             return reader.ReadString();
         }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers.Binary;
 using System.Collections;
 using System.Collections.Generic;
@@ -1584,7 +1584,7 @@ namespace AnimeStudio
         // Endfield's scalar NORMAL stores a complete tangent frame in its raw
         // float32 bits, not a numeric float normal. Decode the source frame;
         // recalculating from UVs is not equivalent to recovering authored data.
-        // See EIEM docs/vertex-data-contract.md for shader evidence and limits.
+        // See EFF docs/vertex-data-contract.md for shader evidence and limits.
         public static void DecompressEndfieldFrame(byte[] inputBytes, VertexFormat format,
             out float[] normals, out float[] tangents)
         {

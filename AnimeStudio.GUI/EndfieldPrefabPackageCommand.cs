@@ -16,8 +16,8 @@ namespace AnimeStudio.GUI
             var outputRoot = args?.Length > 4 ? Path.GetFullPath(args[4]) : string.Empty;
             if (args.Length != 5)
             {
-                Console.Error.WriteLine("Usage: --export-eiem-prefab <vfs-root> <workspace> <logical-prefab> <output-root>");
-                WriteStatus(outputRoot, "failed", "Expected four command arguments after --export-eiem-prefab.");
+                Console.Error.WriteLine("Usage: --export-eff-prefab <vfs-root> <workspace> <logical-prefab> <output-root>");
+                WriteStatus(outputRoot, "failed", "Expected four command arguments after --export-eff-prefab.");
                 return 2;
             }
 
@@ -71,9 +71,9 @@ namespace AnimeStudio.GUI
 
                 var packageDirectory = Path.Combine(outputRoot,
                     Path.GetDirectoryName(prefabPath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty,
-                    Path.GetFileNameWithoutExtension(prefabPath) + ".eiem");
-                WriteStatus(outputRoot, "success", $"EIEM package exported: {packageDirectory}");
-                Console.WriteLine($"EIEM package exported: {packageDirectory}");
+                    Path.GetFileNameWithoutExtension(prefabPath) + ".eff");
+                WriteStatus(outputRoot, "success", $"EFF package exported: {packageDirectory}");
+                Console.WriteLine($"EFF package exported: {packageDirectory}");
                 return 0;
             }
             catch (Exception ex)

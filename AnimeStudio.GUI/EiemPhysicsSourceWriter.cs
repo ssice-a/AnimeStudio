@@ -13,7 +13,7 @@ namespace AnimeStudio.GUI
     /// <summary>
     /// Writes the original BeyondDynamicBone component graph consumed by the
     /// Blender native-authoring importer. This is source data beside a normal
-    /// EIEM package; it does not add a runtime Physics action to mod.ini.
+    /// EFF package; it does not add a runtime Physics action to mod.ini.
     /// </summary>
     internal static class EiemPhysicsSourceWriter
     {

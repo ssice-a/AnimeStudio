@@ -1,8 +1,8 @@
 # Anime Studio
 
-EIEM 包导出当前写入 EIEMESH v6 和 EIESKEL v2。旧包需要重新导出后再交给当前 Blender 插件和 DLL 使用。
+EFF 包导出当前写入 EFFMESH v6 和 EFFSKEL v2。旧包需要重新导出后再交给当前 Blender 插件和 DLL 使用。
 
-本 EIEM fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
+本 EFF fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
 发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。
 检查失败不会影响浏览、解包或导出，程序不会自行覆盖安装。
 
@@ -18,7 +18,7 @@ It comes as a GUI and a CLI, both in the same download. The GUI is what you want
 
 # How do I download this ?
 
-- **[EIEM AnimeStudio Releases](https://github.com/ssice-a/AnimeStudio/releases)**：下载与已安装 .NET Desktop Runtime 对应的 `net9.0-windows` 或 `net10.0-windows` 压缩包。
+- **[EFF AnimeStudio Releases](https://github.com/ssice-a/AnimeStudio/releases)**：下载与已安装 .NET Desktop Runtime 对应的 `net9.0-windows` 或 `net10.0-windows` 压缩包。
 
 Both builds are Windows x64 only and need the matching [.NET Desktop Runtime](https://dotnet.microsoft.com/download/dotnet) installed. Unzip anywhere and run `AnimeStudio.GUI.exe` or `AnimeStudio.CLI.exe`.
 

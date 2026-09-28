@@ -13,10 +13,10 @@ namespace AnimeStudio.GUI
         {
             using var stream = File.OpenRead(path);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
-            RequireMagic(reader, "EIEMESH\0");
+            RequireMagic(reader, "EFFMESH\0");
             var version = reader.ReadInt32();
             if (version != 6)
-                throw new InvalidDataException($"Unsupported EIEM format version {version} in {path}.");
+                throw new InvalidDataException($"Unsupported EFF format version {version} in {path}.");
             _ = reader.ReadString(); // coordinate space
             _ = reader.ReadString(); // source path
             _ = reader.ReadString(); // name
@@ -62,7 +62,7 @@ namespace AnimeStudio.GUI
         {
             using var stream = File.OpenRead(path);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
-            RequireMagic(reader, "EIESKEL\0");
+            RequireMagic(reader, "EFFSKEL\0");
             RequireVersion(reader.ReadInt32(), 2, path);
             _ = reader.ReadString(); // coordinate space
             var nodes = Count(reader, path);
@@ -116,7 +116,7 @@ namespace AnimeStudio.GUI
         {
             var value = reader.ReadInt32();
             if (value < 0 || value > MaxCollectionLength)
-                throw new InvalidDataException($"Invalid EIEM collection length in {path}.");
+                throw new InvalidDataException($"Invalid EFF collection length in {path}.");
             return value;
         }
 
@@ -124,26 +124,26 @@ namespace AnimeStudio.GUI
         {
             var actual = Encoding.ASCII.GetString(reader.ReadBytes(8));
             if (!string.Equals(actual, value, StringComparison.Ordinal))
-                throw new InvalidDataException("Unexpected EIEM file header.");
+                throw new InvalidDataException("Unexpected EFF file header.");
         }
 
         private static void RequireVersion(int actual, int expected, string path)
         {
             if (actual != expected)
-                throw new InvalidDataException($"Unsupported EIEM format version {actual} in {path}.");
+                throw new InvalidDataException($"Unsupported EFF format version {actual} in {path}.");
         }
 
         private static void Skip(BinaryReader reader, long bytes, string path)
         {
             if (bytes < 0 || bytes > reader.BaseStream.Length - reader.BaseStream.Position)
-                throw new InvalidDataException($"Truncated EIEM data in {path}.");
+                throw new InvalidDataException($"Truncated EFF data in {path}.");
             reader.BaseStream.Seek(bytes, SeekOrigin.Current);
         }
 
         private static void RequireEnd(Stream stream, string path)
         {
             if (stream.Position != stream.Length)
-                throw new InvalidDataException($"Unexpected trailing EIEM data in {path}.");
+                throw new InvalidDataException($"Unexpected trailing EFF data in {path}.");
         }
     }
 }
