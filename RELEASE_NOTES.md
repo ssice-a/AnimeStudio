@@ -1,4 +1,4 @@
-# AnimeStudio v1.2.1
+# AnimeStudio v1.2.2
 
 - Prefab previews no longer show Unity internal PathID, CAB identifiers, or hash-style references.
 - GameObjects show hierarchy paths; meshes, materials, avatars, and controllers prefer readable logical asset paths.
