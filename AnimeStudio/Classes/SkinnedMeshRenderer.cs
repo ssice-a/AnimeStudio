@@ -11,6 +11,7 @@ namespace AnimeStudio
         public List<PPtr<Transform>> m_Bones;
         public float[] m_BlendShapeWeights;
         public PPtr<Transform> m_RootBone;
+        public PPtr<Transform> m_SkinningRoot;
         public AABB m_AABB;
         public bool m_DirtyAABB;
 
@@ -64,7 +65,7 @@ namespace AnimeStudio
 
             if (reader.Game.Type.IsArknightsEndfieldCB3() || reader.Game.Type.IsArknightsEndfield())
             {
-                var m_SkinningRoot = new PPtr<Transform>(reader);
+                m_SkinningRoot = new PPtr<Transform>(reader);
             }
         }
     }

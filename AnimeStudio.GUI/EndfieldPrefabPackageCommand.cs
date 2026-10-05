@@ -47,6 +47,15 @@ namespace AnimeStudio.GUI
                 if (closure.Length == 0)
                     throw new InvalidDataException("No readable VFS bundles were found for the Prefab dependency closure.");
 
+                // Parse authoring/assembly inputs only. Unknown objects (including Shader)
+                // retain their complete serialized bytes in the source baseline.
+                TypeFlags.SetTypes(new System.Collections.Generic.Dictionary<ClassIDType, (bool, bool)>());
+                foreach (var type in new[] { ClassIDType.GameObject, ClassIDType.Transform, ClassIDType.RectTransform,
+                    ClassIDType.SkinnedMeshRenderer, ClassIDType.MeshRenderer, ClassIDType.MeshFilter,
+                    ClassIDType.Mesh, ClassIDType.Material, ClassIDType.Texture2D, ClassIDType.MonoBehaviour,
+                    ClassIDType.MonoScript, ClassIDType.AssetBundle, ClassIDType.Animator, ClassIDType.Avatar })
+                    TypeFlags.SetType(type, parse: true, export: true);
+
                 var manager = new AssetsManager
                 {
                     Game = GameManager.GetGameByType(GameType.ArknightsEndfield),

@@ -73,12 +73,7 @@ namespace AnimeStudio.GUI
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
                 4 * 1024 * 1024, FileOptions.SequentialScan);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
-            if (!string.Equals(reader.ReadString(), Magic, StringComparison.Ordinal))
-                throw new InvalidDataException("This is not an EFF Endfield index.");
-            var version = reader.ReadInt32();
-            if (version != FormatVersion)
-                throw new InvalidDataException($"Unsupported EFF Endfield index version: {version}.");
-            var fingerprint = reader.ReadString();
+            var fingerprint = ReadHeader(reader);
             long storedAssetCount = -1;
             long storedCabCount = -1;
 
@@ -137,18 +132,24 @@ namespace AnimeStudio.GUI
             using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false))
             {
                 fingerprint = ReadHeader(reader);
+                long assetCount = 0, cabCount = 0;
+                var ended = false;
                 while (stream.Position < stream.Length)
                 {
                     var kind = reader.ReadByte();
                     if (kind == EndRecord)
                     {
-                        _ = reader.ReadInt64();
-                        _ = reader.ReadInt64();
+                        var storedAssets = reader.ReadInt64();
+                        var storedCabs = reader.ReadInt64();
+                        if (storedAssets != assetCount || storedCabs != cabCount || stream.Position != stream.Length)
+                            throw new InvalidDataException("The Endfield index is incomplete or corrupt.");
+                        ended = true;
                         break;
                     }
 
                     if (kind == AssetRecord)
                     {
+                        assetCount++;
                         var record = ReadAsset(reader);
                         if (string.Equals(record.Container.Replace('\\', '/').Trim('/'), target,
                                 StringComparison.OrdinalIgnoreCase))
@@ -158,6 +159,7 @@ namespace AnimeStudio.GUI
 
                     if (kind == CabRecord)
                     {
+                        cabCount++;
                         var cabName = reader.ReadString();
                         var source = reader.ReadString();
                         var dependencyCount = reader.ReadInt32();
@@ -172,6 +174,7 @@ namespace AnimeStudio.GUI
 
                     throw new InvalidDataException("Unknown EFF Endfield index record.");
                 }
+                if (!ended) throw new InvalidDataException("The Endfield index has no end record.");
             }
 
             if (prefabRecords.Count == 0)
@@ -228,7 +231,11 @@ namespace AnimeStudio.GUI
 
         private static string ReadHeader(BinaryReader reader)
         {
-            if (!string.Equals(reader.ReadString(), Magic, StringComparison.Ordinal))
+            // EIEM v3 predates the EFF name; its record layout is identical.
+            // Read it without rewriting the user's index, retaining all v3 checks.
+            var magic = reader.ReadString();
+            if (!string.Equals(magic, Magic, StringComparison.Ordinal) &&
+                !string.Equals(magic, "EIEM_END_FIELD_INDEX", StringComparison.Ordinal))
                 throw new InvalidDataException("This is not an EFF Endfield index.");
             var version = reader.ReadInt32();
             if (version != FormatVersion)

@@ -8,23 +8,32 @@ namespace AnimeStudio.GUI
 {
     internal static class EndfieldPrefabDocument
     {
+        private static string Identity(AnimeStudio.Object obj) =>
+            obj.assetsFile.fileName.ToLowerInvariant() + ":" + obj.m_PathID;
+
         public static GameObject FindRoot(IEnumerable<GameObject> objects, VirtualAssetFile file,
             IReadOnlyCollection<string> preferredCabNames)
         {
-            var candidates = objects.Where(x =>
-                    string.Equals(x.m_Name, file.Stem, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (candidates.Length == 0)
-                return null;
-
-            return candidates
-                .OrderByDescending(x => preferredCabNames?.Contains(
-                    Path.GetFileName(x.assetsFile?.fileName ?? string.Empty),
-                    StringComparer.OrdinalIgnoreCase) == true)
-                .ThenByDescending(IsRoot)
-                .ThenByDescending(x => x.HasModel())
-                .ThenBy(x => x.m_PathID)
-                .FirstOrDefault();
+            // Preloads are dependencies; AssetInfo.asset is the container entry.
+            var files = objects.Select(x => x.assetsFile).Distinct()
+                .Where(x => preferredCabNames == null || preferredCabNames.Count == 0 ||
+                    preferredCabNames.Contains(x.fileName, StringComparer.OrdinalIgnoreCase));
+            var roots = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+            foreach (var bundle in files.SelectMany(x => x.Objects).OfType<AssetBundle>())
+            foreach (var entry in bundle.m_Container)
+            {
+                var container = entry.Key;
+                if (ulong.TryParse(container, out var hash) && AssetsHelper.Paths.TryGetValue(hash, out var path))
+                    container = path;
+                if (!string.Equals(container.Replace('\\', '/'), file.Container.Replace('\\', '/'),
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                // Embedded subassets can share the same container path.
+                if (entry.Value.asset.TryGet<GameObject>(out var root))
+                    roots.TryAdd(Identity(root), root);
+            }
+            if (roots.Count > 1)
+                throw new InvalidDataException($"Ambiguous GameObject entry for '{file.Container}'.");
+            return roots.Values.SingleOrDefault();
         }
 
         public static string Build(VirtualAssetFile file, GameObject root,
@@ -40,7 +49,7 @@ namespace AnimeStudio.GUI
             builder.AppendLine();
             builder.AppendLine("Hierarchy and component references:");
 
-            var visited = new HashSet<long>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             WriteGameObject(builder, root, 0, visited, transformPaths, resolver);
             builder.AppendLine();
             builder.AppendLine($"GameObjects: {visited.Count:N0}");
@@ -51,14 +60,14 @@ namespace AnimeStudio.GUI
         public static IReadOnlyList<GameObject> GetHierarchy(GameObject root)
         {
             var result = new List<GameObject>();
-            var visited = new HashSet<long>();
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var pending = new Stack<GameObject>();
             if (root != null)
                 pending.Push(root);
             while (pending.Count > 0)
             {
                 var gameObject = pending.Pop();
-                if (gameObject == null || !visited.Add(gameObject.m_PathID))
+                if (gameObject == null || !visited.Add(Identity(gameObject)))
                     continue;
                 result.Add(gameObject);
                 var children = gameObject.m_Transform?.m_Children;
@@ -75,10 +84,10 @@ namespace AnimeStudio.GUI
         }
 
         private static void WriteGameObject(StringBuilder builder, GameObject gameObject, int depth,
-            HashSet<long> visited, IReadOnlyDictionary<Transform, string> transformPaths,
+            HashSet<string> visited, IReadOnlyDictionary<Transform, string> transformPaths,
             LogicalAssetResolver resolver)
         {
-            if (gameObject == null || depth > 512 || !visited.Add(gameObject.m_PathID))
+            if (gameObject == null || depth > 512 || !visited.Add(Identity(gameObject)))
                 return;
 
             var indent = new string(' ', depth * 2);

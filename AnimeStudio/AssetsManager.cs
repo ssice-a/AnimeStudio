@@ -26,6 +26,8 @@ namespace AnimeStudio
 
         /// <summary>Number of cached resource streams (for map-builder flush decisions).</summary>
         public int ResourceFileCount => resourceFileReaders.Count;
+        /// <summary>Loaded raw bundle members; callers must preserve stream positions and ownership.</summary>
+        public IReadOnlyDictionary<string, BinaryReader> ResourceFileReaders => resourceFileReaders;
         public CancellationTokenSource tokenSource = new CancellationTokenSource();
         public List<SerializedFile> assetsFileList = new List<SerializedFile>();
 

@@ -34,6 +34,7 @@ namespace AnimeStudio.GUI
         private readonly List<string> renderIni = new();
         private readonly List<string> renderSections = new();
         private readonly List<string> binaryFiles = new();
+        private readonly List<EiemSourceManifestWriter.AuthorResource> sourceResources = new();
         private string rootDirectory;
         private GameObject root;
         private Dictionary<Transform, string> transformPaths;
@@ -79,11 +80,15 @@ namespace AnimeStudio.GUI
             renderIni.Clear();
             renderSections.Clear();
             binaryFiles.Clear();
+            sourceResources.Clear();
             skeleton = null;
 
             rootDirectory = outputDirectory;
             root = prefabRoot;
             Directory.CreateDirectory(rootDirectory);
+            // A failed repeat export must never leave an old success manifest.
+            var manifestPath = Path.Combine(rootDirectory, "source", "manifest.json");
+            if (File.Exists(manifestPath)) File.Delete(manifestPath);
             var physicsDirectory = Path.Combine(rootDirectory, "physics");
             if (Directory.Exists(physicsDirectory))
                 Directory.Delete(physicsDirectory, recursive: true);
@@ -99,10 +104,9 @@ namespace AnimeStudio.GUI
             var renderIndex = 0;
             foreach (var gameObject in hierarchy)
             {
-                if (gameObject.m_SkinnedMeshRenderer != null)
-                    WriteRenderer(gameObject, gameObject.m_SkinnedMeshRenderer, renderIndex++);
-                else if (gameObject.m_MeshRenderer != null && gameObject.m_MeshFilter?.m_Mesh != null)
-                    WriteRenderer(gameObject, gameObject.m_MeshRenderer, renderIndex++);
+                foreach (var pointer in gameObject.m_Components)
+                    if (pointer.Cast<AnimeStudio.Object>().TryGet(out var component) && component is Renderer renderer)
+                        WriteRenderer(gameObject, renderer, renderIndex++);
             }
 
             if (renderIndex == 0)
@@ -162,6 +166,19 @@ namespace AnimeStudio.GUI
             }
 
             File.WriteAllLines(Path.Combine(rootDirectory, "mod.ini"), ini, new UTF8Encoding(false));
+            // Publish the success manifest only after all author payloads validate.
+            if (errors.Count == 0)
+            {
+                try
+                {
+                    EiemSourceManifestWriter.Write(rootDirectory, prefab, root, dependencies,
+                        vfsFingerprint, sourceResources);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add("Native source baseline export failed: " + ex.Message);
+                }
+            }
             WriteReport();
             return errors.Count == 0;
         }
@@ -173,6 +190,17 @@ namespace AnimeStudio.GUI
             {
                 errors.Add($"Unreadable mesh on renderer '{GetTransformPath(gameObject.m_Transform)}'.");
                 return;
+            }
+
+            // Export materials for every use, including a shared Mesh's other consumers.
+            var materialPointers = renderer.m_Materials ?? new List<PPtr<Material>>();
+            var materialSections = new string[materialPointers.Count];
+            for (var slot = 0; slot < materialPointers.Count; slot++)
+            {
+                if (materialPointers[slot].TryGet(out var material))
+                    materialSections[slot] = EnsureMaterial(material);
+                else if (!materialPointers[slot].IsNull)
+                    errors.Add($"Unresolved material slot {slot} on renderer '{GetTransformPath(gameObject.m_Transform)}'.");
             }
 
             // A Mesh resource may be consumed by the visible renderer,
@@ -195,16 +223,13 @@ namespace AnimeStudio.GUI
             if (!string.IsNullOrEmpty(skeletonName))
                 renderIni.Add($"skeleton={skeletonName}");
 
-            var materialPointers = renderer.m_Materials ?? new List<PPtr<Material>>();
             for (var slot = 0; slot < materialPointers.Count; slot++)
             {
                 var subMesh = GetRendererSubMesh(renderer, slot);
                 if (subMesh >= 0)
                     renderIni.Add($"submesh.{subMesh}={slot}");
-                if (materialPointers[slot].TryGet(out var material))
-                    renderIni.Add($"material.{slot}={EnsureMaterial(material)}");
-                else
-                    errors.Add($"Unresolved material slot {slot} on renderer '{GetTransformPath(gameObject.m_Transform)}'.");
+                if (materialSections[slot] != null)
+                    renderIni.Add($"material.{slot}={materialSections[slot]}");
             }
             renderIni.Add(string.Empty);
         }
@@ -228,6 +253,7 @@ namespace AnimeStudio.GUI
             WriteMesh(Path.Combine(rootDirectory, fileName), mesh, source, currentBonePaths);
             meshes.Add(mesh, section);
             meshBonePaths.Add(mesh, currentBonePaths);
+            sourceResources.Add(new(mesh, section, fileName, source));
             
             resourceIni.Add($"[{section}]");
             resourceIni.Add($"path={fileName.Replace('\\', '/')}");
@@ -246,6 +272,7 @@ namespace AnimeStudio.GUI
             var fileName = UniqueFileName("skeletons", root.Name, root.m_PathID, ".skeleton");
             WriteSkeleton(Path.Combine(rootDirectory, fileName));
             skeleton = section;
+            sourceResources.Add(new(root.m_Transform, section, fileName, null));
             resourceIni.Add($"[{section}]");
             resourceIni.Add($"path={fileName.Replace('\\', '/')}");
             resourceIni.Add(string.Empty);
@@ -282,6 +309,7 @@ namespace AnimeStudio.GUI
                 errors.Add($"No unambiguous logical Material path for '{material.Name}' (PathID {material.m_PathID}).");
             WriteMaterial(Path.Combine(rootDirectory, fileName), material, source);
             materials.Add(material, section);
+            sourceResources.Add(new(material, section, fileName, source));
             resourceIni.AddRange(new[]
             {
                 $"[{section}]",
@@ -314,6 +342,7 @@ namespace AnimeStudio.GUI
             }
 
             textures.Add(texture, section);
+            sourceResources.Add(new(texture, section, fileName, source));
             var declaration = new List<string>
             {
                 $"[{section}]",
@@ -528,13 +557,10 @@ namespace AnimeStudio.GUI
                     dependencies?.GetCabNames(candidate.Source)
                         .Contains(cabName, StringComparer.OrdinalIgnoreCase) == true)
                 .ToArray();
-            if (cabMatches.Length == 1)
-                return cabMatches[0].Container;
-
-            var namedMatches = candidates.Where(candidate =>
-                    string.Equals(candidate.Name, asset.Name, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            return namedMatches.Length == 1 ? namedMatches[0].Container : null;
+            var paths = cabMatches.Where(candidate => candidate.Offset < 0 || candidate.Offset == asset.assetsFile.offset)
+                .Select(candidate => candidate.Container.Replace('\\', '/'))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            return paths.Length == 1 ? paths[0] : null;
         }
 
         private static string AssetKey(string type, long pathId) =>
@@ -677,8 +703,12 @@ namespace AnimeStudio.GUI
 
         private void WriteReport()
         {
-            if (errors.Count == 0) return;
-            File.WriteAllLines(Path.Combine(rootDirectory, "export-errors.txt"), errors, new UTF8Encoding(false));
+            var path = Path.Combine(rootDirectory, "export-errors.txt");
+            if (errors.Count == 0)
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+            else File.WriteAllLines(path, errors, new UTF8Encoding(false));
         }
     }
 }

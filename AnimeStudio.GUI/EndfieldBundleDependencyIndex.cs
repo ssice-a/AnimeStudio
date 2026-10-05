@@ -84,6 +84,9 @@ namespace AnimeStudio.GUI
                 : Array.Empty<string>();
         }
 
+        public string GetBundleSource(string cab) =>
+            byCab.TryGetValue(cab, out var record) ? record.Source : null;
+
         public IReadOnlyList<string> ResolveBundleClosure(string source)
         {
             source = NormalizeSource(source);
