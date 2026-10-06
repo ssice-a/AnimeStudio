@@ -76,6 +76,7 @@ namespace AnimeStudio.GUI
             var fingerprint = ReadHeader(reader);
             long storedAssetCount = -1;
             long storedCabCount = -1;
+            var ended = false;
 
             while (stream.Position < stream.Length)
             {
@@ -84,6 +85,7 @@ namespace AnimeStudio.GUI
                     case EndRecord:
                         storedAssetCount = reader.ReadInt64();
                         storedCabCount = reader.ReadInt64();
+                        ended = true;
                         goto Finished;
                     case AssetRecord:
                         var name = reader.ReadString();
@@ -97,7 +99,7 @@ namespace AnimeStudio.GUI
                         var cabName = reader.ReadString();
                         var cabSource = Pool(sourcePool, reader.ReadString());
                         var dependencyCount = reader.ReadInt32();
-                        if (dependencyCount < 0 || dependencyCount > 100_000)
+                        if (dependencyCount < 0 || dependencyCount > reader.BaseStream.Length - reader.BaseStream.Position)
                             throw new InvalidDataException($"Invalid CAB dependency count: {dependencyCount}.");
                         var cabDependencies = new string[dependencyCount];
                         for (var i = 0; i < dependencyCount; i++)
@@ -111,7 +113,8 @@ namespace AnimeStudio.GUI
 
         Finished:
             assets.FinishLoading(sortRecords: false);
-            if (storedAssetCount != assets.AssetCount || storedCabCount != dependencies.CabCount)
+            if (!ended || stream.Position != stream.Length ||
+                storedAssetCount != assets.AssetCount || storedCabCount != dependencies.CabCount)
                 throw new InvalidDataException("The EFF Endfield index is incomplete or corrupt.");
             return new LoadedEndfieldIndex(
                 assets, dependencies, fingerprint, storedAssetCount, storedCabCount);
@@ -163,7 +166,7 @@ namespace AnimeStudio.GUI
                         var cabName = reader.ReadString();
                         var source = reader.ReadString();
                         var dependencyCount = reader.ReadInt32();
-                        if (dependencyCount < 0 || dependencyCount > 100_000)
+                        if (dependencyCount < 0 || dependencyCount > reader.BaseStream.Length - reader.BaseStream.Position)
                             throw new InvalidDataException($"Invalid CAB dependency count: {dependencyCount}.");
                         var cabDependencies = new string[dependencyCount];
                         for (var i = 0; i < dependencyCount; i++)
@@ -181,7 +184,11 @@ namespace AnimeStudio.GUI
                 throw new FileNotFoundException($"Prefab is not present in the Endfield index: {target}");
 
             var prefab = new VirtualAssetFile(target, prefabRecords);
-            var closureSources = dependencies.ResolveBundleClosure(prefabRecords[0].Source)
+            var sources = prefabRecords.Select(record => record.Source).Where(source => !string.IsNullOrWhiteSpace(source))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (sources.Length != 1)
+                throw new InvalidDataException("The selected Prefab has no unambiguous source Bundle: " + target);
+            var closureSources = dependencies.ResolveBundleClosure(sources[0])
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var closureAssets = new List<VirtualAssetRecord>();
 
@@ -212,7 +219,7 @@ namespace AnimeStudio.GUI
                         _ = reader.ReadString();
                         _ = reader.ReadString();
                         var dependencyCount = reader.ReadInt32();
-                        if (dependencyCount < 0 || dependencyCount > 100_000)
+                        if (dependencyCount < 0 || dependencyCount > reader.BaseStream.Length - reader.BaseStream.Position)
                             throw new InvalidDataException($"Invalid CAB dependency count: {dependencyCount}.");
                         for (var i = 0; i < dependencyCount; i++)
                             _ = reader.ReadString();
@@ -237,9 +244,9 @@ namespace AnimeStudio.GUI
             if (!string.Equals(magic, Magic, StringComparison.Ordinal) &&
                 !string.Equals(magic, "EIEM_END_FIELD_INDEX", StringComparison.Ordinal))
                 throw new InvalidDataException("This is not an EFF Endfield index.");
-            var version = reader.ReadInt32();
-            if (version != FormatVersion)
-                throw new InvalidDataException($"Unsupported EFF Endfield index version: {version}.");
+            // Compatibility follows record fields, counts and complete extent.
+            // A release label alone cannot reject an otherwise identical index.
+            reader.ReadInt32();
             return reader.ReadString();
         }
 

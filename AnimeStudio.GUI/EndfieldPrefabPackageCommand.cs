@@ -13,11 +13,12 @@ namespace AnimeStudio.GUI
     {
         public static int Run(string[] args)
         {
+            args ??= Array.Empty<string>();
             var outputRoot = args?.Length > 4 ? Path.GetFullPath(args[4]) : string.Empty;
-            if (args.Length != 5)
+            if (args.Length != 5 && (args.Length != 7 || args[5] != "--unity-version" || string.IsNullOrWhiteSpace(args[6])))
             {
-                Console.Error.WriteLine("Usage: --export-eff-prefab <vfs-root> <workspace> <logical-prefab> <output-root>");
-                WriteStatus(outputRoot, "failed", "Expected four command arguments after --export-eff-prefab.");
+                Console.Error.WriteLine("Usage: --export-eff-prefab <vfs-root> <workspace> <logical-prefab> <output-root> [--unity-version <version>]");
+                WriteStatus(outputRoot, "failed", "Expected four command arguments and an optional explicit Unity version for stripped source metadata.");
                 return 2;
             }
 
@@ -59,7 +60,7 @@ namespace AnimeStudio.GUI
                 var manager = new AssetsManager
                 {
                     Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
-                    SpecifyUnityVersion = "2021.3.34f5",
+                    SpecifyUnityVersion = args.Length == 7 ? args[6] : null,
                     ResolveDependencies = false,
                     FilterData = new AssetsManager.AssetFilterData
                     {

@@ -17,6 +17,8 @@ namespace AnimeStudio
         public bool SkipProcess = false;
         public bool ResolveDependencies = false;
         public string SpecifyUnityVersion;
+        /// <summary>Exact per-CAB version evidence, used only when source metadata is stripped.</summary>
+        public Func<SerializedFile, string> StrippedUnityVersionResolver;
         /// <summary>
         /// Invoked after each bundle/CAB group is loaded from a multi-bundle block.
         /// Used by map builders to process + release streams before the next bundle
@@ -670,7 +672,12 @@ namespace AnimeStudio
             if(Game.Type.IsAzurPromiliaCBT2() && assetsFile.IsVersionStripped) SpecifyUnityVersion = "2022.3.62f3";
             if (assetsFile.IsVersionStripped && string.IsNullOrEmpty(SpecifyUnityVersion))
             {
-                throw new Exception("The Unity version has been stripped, please set the version in the options");
+                var resolvedVersion = StrippedUnityVersionResolver?.Invoke(assetsFile);
+                if (string.IsNullOrWhiteSpace(resolvedVersion))
+                    throw new Exception("The Unity version has been stripped, please set the version in the options or supply per-CAB source version evidence");
+                assetsFile.SetVersion(resolvedVersion);
+                if (assetsFile.IsVersionStripped)
+                    throw new Exception("Per-CAB source version evidence is still stripped: " + assetsFile.fileName);
             }
             if (!string.IsNullOrEmpty(SpecifyUnityVersion))
             {

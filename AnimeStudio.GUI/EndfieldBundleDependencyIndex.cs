@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Xml;
-using System.Xml.Linq;
 
 namespace AnimeStudio.GUI
 {
@@ -24,56 +22,29 @@ namespace AnimeStudio.GUI
 
         internal void AddCab(string name, string source, IEnumerable<string> dependencies)
         {
+            name = NormalizeCab(name);
             source = NormalizeSource(source);
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(source))
                 return;
-            var normalizedDependencies = dependencies
-                .Select(Path.GetFileName)
+            var normalizedDependencies = (dependencies ?? Array.Empty<string>())
+                .Select(NormalizeCab)
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            if (!byCab.ContainsKey(name))
-                byCab.Add(name, new CabRecord(source, normalizedDependencies));
+            if (byCab.TryGetValue(name, out var previous))
+            {
+                if (!string.Equals(previous.Source, source, StringComparison.OrdinalIgnoreCase) ||
+                    !previous.Dependencies.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(normalizedDependencies))
+                    throw new InvalidDataException("Conflicting Bundle source or dependency set for CAB: " + name);
+                return;
+            }
+            byCab.Add(name, new CabRecord(source, normalizedDependencies));
             if (!cabsBySource.TryGetValue(source, out var sourceCabs))
             {
                 sourceCabs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 cabsBySource.Add(source, sourceCabs);
             }
             sourceCabs.Add(name);
-        }
-
-        public static EndfieldBundleDependencyIndex LoadXml(string path)
-        {
-            var index = new EndfieldBundleDependencyIndex();
-            using var reader = XmlReader.Create(path, new XmlReaderSettings
-            {
-                IgnoreComments = true,
-                IgnoreWhitespace = true,
-                DtdProcessing = DtdProcessing.Prohibit,
-            });
-
-            while (!reader.EOF)
-            {
-                if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "Cab")
-                {
-                    reader.Read();
-                    continue;
-                }
-
-                var element = (XElement)XElement.ReadFrom(reader);
-                var name = element.Attribute("Name")?.Value;
-                var source = NormalizeSource(element.Attribute("Source")?.Value);
-                if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(source))
-                    continue;
-
-                var dependencies = element.Elements("Dependency")
-                    .Select(x => Path.GetFileName(x.Value))
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-                index.AddCab(name, source, dependencies);
-            }
-            return index;
         }
 
         public IReadOnlyCollection<string> GetCabNames(string source)
@@ -85,7 +56,36 @@ namespace AnimeStudio.GUI
         }
 
         public string GetBundleSource(string cab) =>
-            byCab.TryGetValue(cab, out var record) ? record.Source : null;
+            byCab.TryGetValue(NormalizeCab(cab), out var record) ? record.Source : null;
+
+        public IReadOnlyDictionary<string, string[]> DirectBundleDependencies(
+            out IReadOnlyDictionary<string, string[]> unresolved)
+        {
+            var result = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            var missing = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            foreach (var source in cabsBySource)
+            {
+                var dependencies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var missingCabs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var cab in source.Value)
+                foreach (var dependency in byCab[cab].Dependencies)
+                {
+                    // Unity owns this intrinsic resource file; it is not a VFS Bundle.
+                    if (string.Equals(dependency, "unity default resources", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!byCab.TryGetValue(dependency, out var owner))
+                    {
+                        missingCabs.Add(dependency);
+                        continue;
+                    }
+                    if (!string.Equals(source.Key, owner.Source, StringComparison.OrdinalIgnoreCase))
+                        dependencies.Add(owner.Source);
+                }
+                result.Add(source.Key.ToLowerInvariant(), dependencies.Select(x => x.ToLowerInvariant()).ToArray());
+                if (missingCabs.Count != 0) missing.Add(source.Key.ToLowerInvariant(), missingCabs.ToArray());
+            }
+            unresolved = missing;
+            return result;
+        }
 
         public IReadOnlyList<string> ResolveBundleClosure(string source)
         {
@@ -133,5 +133,8 @@ namespace AnimeStudio.GUI
             var marker = normalized.IndexOf("Bundles/", StringComparison.OrdinalIgnoreCase);
             return marker >= 0 ? normalized[marker..] : normalized;
         }
+
+        private static string NormalizeCab(string cab) =>
+            Path.GetFileName((cab ?? string.Empty).Replace('\\', '/'));
     }
 }

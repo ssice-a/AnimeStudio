@@ -535,18 +535,12 @@ namespace AnimeStudio.GUI
 
             var workspaceDialog = new OpenFolderDialog
             {
-                Title = "Select workspace for the small on-demand cache (do not select drive C)",
+                Title = "Select workspace for the on-demand cache",
                 InitialFolder = string.IsNullOrWhiteSpace(endfieldWorkspace) ? Path.GetPathRoot(Environment.CurrentDirectory) : endfieldWorkspace
             };
             if (workspaceDialog.ShowDialog(this) != DialogResult.OK)
                 return;
             var workspace = Path.GetFullPath(workspaceDialog.Folder);
-            if (string.Equals(Path.GetPathRoot(workspace), @"C:\", StringComparison.OrdinalIgnoreCase))
-            {
-                MessageBox.Show(this, "Choose a workspace outside drive C. VFS indexes and preview caches will not be written to C.",
-                    "Workspace required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
 
             try
             {
@@ -613,10 +607,9 @@ namespace AnimeStudio.GUI
                 $"assets {value.AssetCount:N0} | CABs {value.CabCount:N0} | failed {value.FailedBundles:N0} | ETA {remaining:hh\\:mm\\:ss}");
         }
 
-        private static string FindDefaultEndfieldVfsRoot()
+        private string FindDefaultEndfieldVfsRoot()
         {
-            var known = @"D:\Hypergryph Launcher\games\Endfield Game\Endfield_Data\StreamingAssets\VFS";
-            return Directory.Exists(known) ? known : Environment.CurrentDirectory;
+            return endfieldVfsArchive?.VfsRoot ?? Environment.CurrentDirectory;
         }
 
         private static string ResolveEndfieldVfsRoot(string selectedPath)

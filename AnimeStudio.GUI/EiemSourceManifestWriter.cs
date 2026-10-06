@@ -119,6 +119,13 @@ namespace AnimeStudio.GUI
                 throw new InvalidDataException($"Expected one exact container entry for the root; found {entries.Count}.");
 
             var sourceDir = Path.Combine(package, "source");
+            var snapshotPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string SnapshotPath(string kind, string member)
+            {
+                var relative = "source/" + kind + "/" + EiemPackageIdentity.SnapshotFileName(member);
+                if (!snapshotPaths.Add(relative)) throw new InvalidDataException("Conflicting source snapshot member: " + member);
+                return relative;
+            }
             Directory.CreateDirectory(Path.Combine(sourceDir, "serialized"));
             Directory.CreateDirectory(Path.Combine(sourceDir, "streams"));
             var serialized = new List<object>();
@@ -128,7 +135,7 @@ namespace AnimeStudio.GUI
                     if (item.byteStart < file.header.m_DataOffset || item.byteStart > file.header.m_FileSize ||
                         item.byteSize > file.header.m_FileSize - item.byteStart)
                         throw new InvalidDataException("Object outside SerializedFile: " + file.fileName + ":" + item.m_PathID);
-                var relative = "source/serialized/" + SafeName(file.fileName) + ".bytes";
+                var relative = SnapshotPath("serialized", file.fileName);
                 var snapshot = Snapshot(file.reader.BaseStream, package, relative, file.header.m_FileSize);
                 serialized.Add(new
                 {
@@ -170,7 +177,7 @@ namespace AnimeStudio.GUI
             }
             var rawStreams = streams.Select(pair => new { member = pair.Key,
                 snapshot = Snapshot(pair.Value.BaseStream, package,
-                    "source/streams/" + SafeName(pair.Key) + ".bytes", pair.Value.BaseStream.Length) }).ToArray();
+                    SnapshotPath("streams", pair.Key), pair.Value.BaseStream.Length) }).ToArray();
 
             var manifest = new
             {
@@ -274,8 +281,6 @@ namespace AnimeStudio.GUI
             finally { source.Position = saved; }
         }
 
-        private static string SafeName(string name) => string.Concat(name.Select(c =>
-            char.IsLetterOrDigit(c) || c == '-' || c == '.' || c == '_' ? c : '_'));
         private static string Hex(byte[] bytes) => bytes == null ? null : Convert.ToHexString(bytes);
         private static float[] Vector(Vector3 value) => new[] { value.X, value.Y, value.Z };
         private static string Identity(AssetObject asset) => asset.assetsFile.fileName.ToLowerInvariant() + ":" + asset.m_PathID;

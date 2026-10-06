@@ -9,15 +9,14 @@ using System.Text;
 namespace AnimeStudio.GUI
 {
     /// <summary>
-    /// Writes the common EFF package consumed by the future Blender add-on and
-    /// runtime loader. The binary files preserve parsed Unity data directly;
+    /// Writes the EFF author package consumed by Blender and the offline compiler.
+    /// The binary files preserve parsed Unity data directly;
     /// they are not an FBX/OBJ-derived approximation.
     /// </summary>
     internal sealed class EiemPackageWriter
     {
         private const int MeshVersion = 6;
         private const int SkeletonVersion = 2;
-        private readonly IReadOnlyList<VirtualAssetRecord> records;
         private readonly EndfieldBundleDependencyIndex dependencies;
         private readonly string vfsFingerprint;
         private readonly Dictionary<string, List<VirtualAssetRecord>> assetsByIdentity =
@@ -34,6 +33,7 @@ namespace AnimeStudio.GUI
         private readonly List<string> renderIni = new();
         private readonly List<string> renderSections = new();
         private readonly List<string> binaryFiles = new();
+        private readonly HashSet<string> payloadFiles = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<EiemSourceManifestWriter.AuthorResource> sourceResources = new();
         private string rootDirectory;
         private GameObject root;
@@ -41,18 +41,11 @@ namespace AnimeStudio.GUI
         private HashSet<Transform> skeletonTransforms;
 
         public EiemPackageWriter(IReadOnlyList<VirtualAssetRecord> records,
-            EndfieldBundleDependencyIndex dependencies)
-            : this(records, dependencies, null)
-        {
-        }
-
-        public EiemPackageWriter(IReadOnlyList<VirtualAssetRecord> records,
             EndfieldBundleDependencyIndex dependencies, string vfsFingerprint)
         {
-            this.records = records ?? Array.Empty<VirtualAssetRecord>();
             this.dependencies = dependencies;
             this.vfsFingerprint = vfsFingerprint;
-            foreach (var record in this.records)
+            foreach (var record in records ?? Array.Empty<VirtualAssetRecord>())
             {
                 var key = AssetKey(record.Type, record.PathId);
                 if (!assetsByIdentity.TryGetValue(key, out var assets))
@@ -80,6 +73,7 @@ namespace AnimeStudio.GUI
             renderIni.Clear();
             renderSections.Clear();
             binaryFiles.Clear();
+            payloadFiles.Clear();
             sourceResources.Clear();
             skeleton = null;
 
@@ -203,14 +197,16 @@ namespace AnimeStudio.GUI
                     errors.Add($"Unresolved material slot {slot} on renderer '{GetTransformPath(gameObject.m_Transform)}'.");
             }
 
+            // Check every consumer's source palette before deduplicating actions.
+            var meshName = EnsureMesh(mesh, renderer as SkinnedMeshRenderer);
+
             // A Mesh resource may be consumed by the visible renderer,
             // shadow proxy and other render instances. Export one resource
             // action, selected by Mesh asset identity inside this Prefab;
-            // the runtime applies it to every matching consumer.
+            // the offline compiler resolves every matching consumer.
             if (!renderedMeshes.Add(mesh))
                 return;
 
-            var meshName = EnsureMesh(mesh, renderer as SkinnedMeshRenderer);
             string skeletonName = null;
             if (renderer is SkinnedMeshRenderer)
                 skeletonName = EnsureSkeleton();
@@ -246,7 +242,7 @@ namespace AnimeStudio.GUI
             }
 
             var section = UniqueName("Mesh", mesh.Name, meshes.Count);
-            var fileName = UniqueFileName("meshes", mesh.Name, mesh.m_PathID, ".mesh");
+            var fileName = PayloadFileName("meshes", mesh, ".mesh");
             var source = ResolveLogicalPath(mesh, "Mesh");
             if (string.IsNullOrEmpty(source))
                 errors.Add($"No unambiguous logical Mesh path for '{mesh.Name}' (PathID {mesh.m_PathID}).");
@@ -269,7 +265,7 @@ namespace AnimeStudio.GUI
                 return skeleton;
 
             var section = UniqueName("Skeleton", root.Name, 0);
-            var fileName = UniqueFileName("skeletons", root.Name, root.m_PathID, ".skeleton");
+            var fileName = PayloadFileName("skeletons", root, ".skeleton");
             WriteSkeleton(Path.Combine(rootDirectory, fileName));
             skeleton = section;
             sourceResources.Add(new(root.m_Transform, section, fileName, null));
@@ -303,7 +299,7 @@ namespace AnimeStudio.GUI
                 return known;
 
             var section = UniqueName("Material", material.Name, materials.Count);
-            var fileName = UniqueFileName("materials", material.Name, material.m_PathID, ".mat");
+            var fileName = PayloadFileName("materials", material, ".mat");
             var source = ResolveLogicalPath(material, "Material");
             if (string.IsNullOrEmpty(source))
                 errors.Add($"No unambiguous logical Material path for '{material.Name}' (PathID {material.m_PathID}).");
@@ -325,7 +321,7 @@ namespace AnimeStudio.GUI
                 return known;
 
             var section = UniqueName("Texture", texture.Name, textures.Count);
-            var fileName = UniqueFileName("textures", texture.Name, texture.m_PathID, ".png");
+            var fileName = PayloadFileName("textures", texture, ".png");
             var source = ResolveLogicalPath(texture, "Texture2D") ?? ResolveLogicalPath(texture, "Texture");
             var originalName = texture.Name ?? string.Empty;
             try
@@ -553,9 +549,11 @@ namespace AnimeStudio.GUI
                 return null;
 
             var cabName = Path.GetFileName(asset.assetsFile?.fileName ?? string.Empty);
+            var bundleSource = dependencies?.GetBundleSource(cabName);
+            if (string.IsNullOrWhiteSpace(bundleSource)) return null;
             var cabMatches = candidates.Where(candidate =>
-                    dependencies?.GetCabNames(candidate.Source)
-                        .Contains(cabName, StringComparer.OrdinalIgnoreCase) == true)
+                    string.Equals(candidate.Source.Replace('\\', '/'), bundleSource,
+                        StringComparison.OrdinalIgnoreCase))
                 .ToArray();
             var paths = cabMatches.Where(candidate => candidate.Offset < 0 || candidate.Offset == asset.assetsFile.offset)
                 .Select(candidate => candidate.Container.Replace('\\', '/'))
@@ -589,7 +587,8 @@ namespace AnimeStudio.GUI
         {
             if (transform != null && transformPaths.TryGetValue(transform, out var path))
                 return path;
-            return transform?.Name ?? string.Empty;
+            errors.Add($"Transform '{transform?.Name}' has no identity inside the selected Prefab hierarchy.");
+            return string.Empty;
         }
 
         private HashSet<Transform> BuildSkeletonTransforms(IEnumerable<GameObject> hierarchy)
@@ -679,8 +678,8 @@ namespace AnimeStudio.GUI
         private static void WriteMatrix(BinaryWriter writer, Matrix4x4 value)
         {
             // Unity serializes this game's bind-pose payload in the transpose
-            // of the managed Matrix4x4 field order.  The EFF file is a
-            // runtime exchange format, so store the exact order consumed by
+            // of the managed Matrix4x4 field order. Store the author format's
+            // exact matrix order consumed by
             // Mesh.bindposes (m00,m10,m20,m30, ...), not the raw asset order.
             for (var column = 0; column < 4; column++)
                 for (var row = 0; row < 4; row++)
@@ -690,8 +689,14 @@ namespace AnimeStudio.GUI
         private static string UniqueName(string prefix, string name, int index) =>
             prefix + Sanitize(name) + "_" + index.ToString(CultureInfo.InvariantCulture);
 
-        private static string UniqueFileName(string directory, string name, long pathId, string extension) =>
-            Path.Combine(directory, Sanitize(name) + "_" + pathId.ToString(CultureInfo.InvariantCulture) + extension);
+        private string PayloadFileName(string directory, AnimeStudio.Object asset, string extension)
+        {
+            var relative = EiemPackageIdentity.PayloadFileName(directory, asset.Name,
+                asset.assetsFile.fileName, asset.m_PathID, extension);
+            if (!payloadFiles.Add(relative))
+                throw new InvalidDataException("Conflicting source identities for payload: " + relative);
+            return relative;
+        }
 
         private static string Sanitize(string value)
         {
