@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+$animeBuildRoot = [IO.Path]::GetFullPath($PSScriptRoot)
+$animeDistRoot = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot 'dist'))
 
 # prepare patcher
 dotnet build AnimeStudio.Patcher -c Release -f net10.0
@@ -7,19 +9,21 @@ $patcher = "AnimeStudio.Patcher\bin\Release\net10.0\AnimeStudio.Patcher.exe"
 if (-not (Test-Path $patcher)) { throw "Patcher not found at $patcher" }
 
 function Reset-Dir([string]$path) {
+    $path = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot $path))
+    if (-not $path.StartsWith($animeDistRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to reset a directory outside dist: $path"
+    }
     if (Test-Path $path) {
-        try {
-            Remove-Item $path -Recurse -Force -ErrorAction Stop
-        } catch {
-            # Directory may be locked (Explorer preview, running app). Clear contents instead.
-            Write-Warning "Could not remove '$path' wholesale; clearing contents. $_"
-            Get-ChildItem $path -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
     }
     New-Item -ItemType Directory -Force $path | Out-Null
 }
 
 function Remove-EmptyDirectories([string]$path) {
+    $path = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot $path))
+    if (-not $path.StartsWith($animeDistRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean a directory outside dist: $path"
+    }
     if (-not (Test-Path $path)) { return }
 
     while ($true) {
@@ -27,7 +31,12 @@ function Remove-EmptyDirectories([string]$path) {
             Where-Object { -not (Get-ChildItem $_.FullName -Force | Select-Object -First 1) })
         if ($empty.Count -eq 0) { break }
 
-        $empty | Remove-Item -Force -ErrorAction SilentlyContinue
+        foreach ($directory in $empty) {
+            if (-not $directory.FullName.StartsWith($path + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Empty directory escaped package output: $($directory.FullName)"
+            }
+            Remove-Item -LiteralPath $directory.FullName -Force -ErrorAction SilentlyContinue
+        }
 
         $stuck = @($empty | Where-Object { Test-Path $_.FullName })
         if ($stuck.Count -eq $empty.Count) {

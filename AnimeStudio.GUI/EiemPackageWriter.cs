@@ -33,7 +33,7 @@ namespace AnimeStudio.GUI
         private readonly List<string> renderIni = new();
         private readonly List<string> renderSections = new();
         private readonly List<string> binaryFiles = new();
-        private readonly HashSet<string> payloadFiles = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> payloadFiles = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<EiemSourceManifestWriter.AuthorResource> sourceResources = new();
         private string rootDirectory;
         private GameObject root;
@@ -692,9 +692,7 @@ namespace AnimeStudio.GUI
         private string PayloadFileName(string directory, AnimeStudio.Object asset, string extension)
         {
             var relative = EiemPackageIdentity.PayloadFileName(directory, asset.Name,
-                asset.assetsFile.fileName, asset.m_PathID, extension);
-            if (!payloadFiles.Add(relative))
-                throw new InvalidDataException("Conflicting source identities for payload: " + relative);
+                asset.assetsFile.fileName, asset.m_PathID, extension, payloadFiles);
             return relative;
         }
 

@@ -1,6 +1,15 @@
 # Anime Studio
 
-EFF 包导出当前写入 EFFMESH v6 和 EFFSKEL v2。旧包需要重新导出后再交给当前 Blender 插件和 DLL 使用。
+本 EFF fork 发布 **v1.3.0**，配套 [EFF v1.3.0](https://github.com/ssice-a/EFF/releases/tag/v1.3.0) 与 [EFF Blender v0.40.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
+
+### 终末地 EFF 导出
+
+1. 选择终末地并打开游戏 VFS，建立或读取来源索引，在资源列表中选择需要制作的 Prefab。
+2. 导出 EFF 源包，将其中的 `mod.ini` 导入 Blender。包内 Mesh、Material、Texture、Skeleton 与源字段模板保持精确来源身份；详细结构见 [EFF_FORMAT.md](EFF_FORMAT.md)。
+3. 保留 `source/manifest.json`、`source/serialized/` 和来源索引供作者准备。`source/streams/` 是原始 Mesh/Texture 载荷快照，普通 Blender 导出不读取；结构文本是供人阅读的报告。这些文件不应全量放入游戏 Mod。
+4. Blender 导出最终作者资源和 `source-inputs.bin`，配套编译器据源 Mesh 确定所有使用它的 Prefab/Renderer；游戏使用 F10 提交整个 mods 集合。
+
+贴图等载荷现在优先使用可读短文件名，只在真实名称冲突时添加短后缀。完整 CAB/PathID 身份保留在 manifest 内，旧包带哈希的名称无需手动改名。包兼容性依据实际数据结构与字段验证，不按应用版本号拒绝。
 
 本 EFF fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
 发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。

@@ -18,6 +18,23 @@ package with no FBX or OBJ conversion step:
   physics/<id>.data.json
 ```
 
+Extracted source packages also contain `source/manifest.json`,
+`source/serialized/*.bytes` and `source/streams/*.bytes`. The current Blender
+native exporter reads the manifest and SerializedFile snapshots for exact source
+identity and Mesh/Material field templates. Keep these two inputs with the source
+package. The raw stream snapshots preserve original Mesh/Texture payloads for
+inspection; the normal Blender export path does not read them. Physics evidence
+is an optional import, and the adjacent `<prefab>.structure.txt` is a human-readable
+report. These extraction inputs and reports are not files to copy into the final
+game Mod directory.
+
+Author payload filenames use the sanitized original asset name. Only a name
+collision adds an eight-character source hash suffix; an additional numeric
+suffix resolves any further collision. Names are checked case-insensitively and
+Windows device names are escaped. Full CAB/PathID identity remains in the source
+manifest rather than the filename. INI and manifest paths reference the assigned
+filename, so existing source packages do not need renaming.
+
 - AnimeStudio writes an `EFFMESH` v3 `.mesh` preserving positions, source normals/tangents,
   colours, all eight UV channels with their original dimensions, submeshes,
   weights, bind poses, bone hashes, BlendShapes and its compact bone palette
