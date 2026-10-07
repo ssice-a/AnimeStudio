@@ -1,11 +1,14 @@
+param([string]$RestoreSources, [string[]]$Frameworks = @('net9.0-windows', 'net10.0-windows'))
 $ErrorActionPreference = 'Stop'
+[string[]]$animeRestoreArgs = @()
+if ($RestoreSources) { $animeRestoreArgs = @('-p:RestoreSources=' + $RestoreSources) }
 $animeBuildRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $animeDistRoot = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot 'dist'))
 
 # prepare patcher
-dotnet build AnimeStudio.Patcher -c Release -f net10.0
+dotnet build AnimeStudio.Patcher -c Release -f net9.0 @animeRestoreArgs
 if ($LASTEXITCODE -ne 0) { throw "Patcher build failed" }
-$patcher = "AnimeStudio.Patcher\bin\Release\net10.0\AnimeStudio.Patcher.exe"
+$patcher = "AnimeStudio.Patcher\bin\Release\net9.0\AnimeStudio.Patcher.exe"
 if (-not (Test-Path $patcher)) { throw "Patcher not found at $patcher" }
 
 function Reset-Dir([string]$path) {
@@ -46,7 +49,7 @@ function Remove-EmptyDirectories([string]$path) {
     }
 }
 
-foreach ($tfm in 'net9.0-windows', 'net10.0-windows') {
+foreach ($tfm in $Frameworks) {
     # config
     $outputDir = ".\dist\$tfm"
     $configuration = 'Release'
@@ -64,12 +67,12 @@ foreach ($tfm in 'net9.0-windows', 'net10.0-windows') {
     if (Test-Path $guiExe) { Remove-Item $guiExe -Force }
 
     # build cli and gui & patch them
-    dotnet build AnimeStudio.CLI -c $configuration -f $tfm
+    dotnet build AnimeStudio.CLI -c $configuration -f $tfm "-p:TargetFrameworks=$tfm" @animeRestoreArgs
     if ($LASTEXITCODE -ne 0) { throw "CLI build failed ($tfm)" }
     & $patcher $cliExe -d bin
     if ($LASTEXITCODE -ne 0) { throw "CLI patch failed ($tfm)" }
 
-    dotnet build AnimeStudio.GUI -c $configuration -f $tfm
+    dotnet build AnimeStudio.GUI -c $configuration -f $tfm "-p:TargetFrameworks=$tfm" @animeRestoreArgs
     if ($LASTEXITCODE -ne 0) { throw "GUI build failed ($tfm)" }
     & $patcher $guiExe -d bin
     if ($LASTEXITCODE -ne 0) { throw "GUI patch failed ($tfm)" }

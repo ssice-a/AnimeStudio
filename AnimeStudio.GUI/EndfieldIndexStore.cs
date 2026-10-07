@@ -34,6 +34,7 @@ namespace AnimeStudio.GUI
             writer.Write(fingerprint ?? string.Empty);
         }
 
+#if !EFF_SOURCE_READER
         public static void WriteAsset(BinaryWriter writer, AssetEntry asset)
         {
             writer.Write(AssetRecord);
@@ -55,6 +56,7 @@ namespace AnimeStudio.GUI
                 writer.Write(dependency ?? string.Empty);
         }
 
+#endif
         public static void WriteEnd(BinaryWriter writer, long assetCount, long cabCount)
         {
             writer.Write(EndRecord);

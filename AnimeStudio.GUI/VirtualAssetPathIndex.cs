@@ -155,6 +155,7 @@ namespace AnimeStudio.GUI
             node.Assets.Add(asset);
         }
 
+#if !EFF_SOURCE_READER
         internal void Add(AssetEntry asset)
         {
             Add(new VirtualAssetRecord(
@@ -166,6 +167,7 @@ namespace AnimeStudio.GUI
                 asset.Offset));
         }
 
+#endif
         internal void FinishLoading(bool sortRecords)
         {
             if (sortRecords)
