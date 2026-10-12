@@ -64,7 +64,8 @@ namespace AnimeStudio.GUI
             writer.Write(cabCount);
         }
 
-        public static LoadedEndfieldIndex Load(string path)
+        public static LoadedEndfieldIndex Load(string path, ISet<string> containers = null,
+            Func<VirtualAssetRecord, bool> recordFilter = null)
         {
             var assets = new VirtualAssetPathIndex("Assets");
             var dependencies = new EndfieldBundleDependencyIndex();
@@ -79,6 +80,7 @@ namespace AnimeStudio.GUI
             long storedAssetCount = -1;
             long storedCabCount = -1;
             var ended = false;
+            long readAssetCount = 0;
 
             while (stream.Position < stream.Length)
             {
@@ -90,11 +92,22 @@ namespace AnimeStudio.GUI
                         ended = true;
                         goto Finished;
                     case AssetRecord:
+                        readAssetCount++;
                         var name = reader.ReadString();
-                        var container = Pool(containerPool, reader.ReadString());
-                        var type = Pool(typePool, reader.ReadString());
+                        var container = reader.ReadString();
+                        var type = reader.ReadString();
                         var pathId = reader.ReadInt64();
-                        var source = Pool(sourcePool, reader.ReadString());
+                        var source = reader.ReadString();
+                        // Source preparation needs only the requested asset
+                        // identities. Keep the complete CAB dependency graph,
+                        // without materializing every unrelated asset/tree node.
+                        if (containers != null && !containers.Contains(container.Replace('\\', '/')))
+                            break;
+                        if (recordFilter != null && !recordFilter(new VirtualAssetRecord(name, container, type, pathId, source)))
+                            break;
+                        container = Pool(containerPool, container);
+                        type = Pool(typePool, type);
+                        source = Pool(sourcePool, source);
                         assets.Add(new VirtualAssetRecord(name, container, type, pathId, source));
                         break;
                     case CabRecord:
@@ -116,7 +129,7 @@ namespace AnimeStudio.GUI
         Finished:
             assets.FinishLoading(sortRecords: false);
             if (!ended || stream.Position != stream.Length ||
-                storedAssetCount != assets.AssetCount || storedCabCount != dependencies.CabCount)
+                storedAssetCount != readAssetCount || storedCabCount != dependencies.CabCount)
                 throw new InvalidDataException("The EFF Endfield index is incomplete or corrupt.");
             return new LoadedEndfieldIndex(
                 assets, dependencies, fingerprint, storedAssetCount, storedCabCount);

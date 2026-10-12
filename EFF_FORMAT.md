@@ -62,6 +62,28 @@ authoring implementation is maintained in
 
 ## Blender status
 
+### Optional animation library
+
+The independent facial-animation exporter writes `.eanim` JSON with
+`format=EFF_ANIMATION_LIBRARY` and `coordinate=unity-y-up-left-handed`.
+`sourceAvatar` and `avatarIdentity` identify the selected SkeletalMorph avatar.
+`skeleton` contains its referenced Unity Avatar's complete ordered Transform
+paths, parent paths, and original local position/quaternion/scale. Each clip
+contains a source name/identity, kind (`Emotion`, `Pose`, `Anim`), duration,
+sample times in seconds and bone tracks keyed by full Transform path.
+Each sample is `[px,py,pz,qx,qy,qz,qw,sx,sy,sz]`. Constant tracks may contain
+only their two endpoint samples and a track-local `times` array. Static poses
+contain one sample at zero. Unmapped controls are recorded in `skipped`.
+
+The offline exporter evaluates the game's additive SkeletalMorph bone deltas
+and source Hermite curves, samples dynamic curves at 60 Hz plus all source key
+times, and preserves quaternion continuity. It does not guess missing mappings
+or synthesize random blink/micro-expression timing. Weighted source curves
+without a verified evaluator are rejected. Blender creates Actions on the
+selected armature using its source paths and reference transforms; it does not
+parse game bundles. `.eanim` is optional authoring input, is not declared in
+`mod.ini`, and does not add a runtime animation replacement feature.
+
 `EFF-blender/eiem_blender_addon.py` provides the package entry points:
 
 - **File > Import > EFF mod package** reads `mod.ini`, creates resource Mesh

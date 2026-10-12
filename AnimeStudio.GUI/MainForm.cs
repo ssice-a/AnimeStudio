@@ -164,6 +164,8 @@ namespace AnimeStudio.GUI
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: false));
             eiemMenu.DropDownItems.Add("Checked Prefab as EFF mod package...", null,
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: true));
+            eiemMenu.DropDownItems.Add("Checked facial animations as EFF library...", null,
+                async (_, _) => await ExportCheckedEndfieldAnimationsAsync());
             formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
 
             var importJson = new ToolStripMenuItem
@@ -3739,7 +3741,7 @@ namespace AnimeStudio.GUI
                 Studio.OpenFolderInExplorer(output);
         }
 
-        private List<VirtualAssetFile> GetCheckedEndfieldPrefabFiles()
+        private List<VirtualAssetFile> GetCheckedEndfieldFiles(bool prefabsOnly = true)
         {
             var result = new List<VirtualAssetFile>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3747,7 +3749,7 @@ namespace AnimeStudio.GUI
             {
                 foreach (TreeNode node in nodes)
                 {
-                    if (node.Checked && node.Tag is VirtualAssetFile file && file.IsPrefab &&
+                    if (node.Checked && node.Tag is VirtualAssetFile file && (!prefabsOnly || file.IsPrefab) &&
                         seen.Add(file.Container))
                         result.Add(file);
                     if (node.Nodes.Count > 0)
@@ -3758,9 +3760,43 @@ namespace AnimeStudio.GUI
             return result;
         }
 
+        private async Task ExportCheckedEndfieldAnimationsAsync()
+        {
+            var checkedFiles = GetCheckedEndfieldFiles(prefabsOnly: false);
+            var avatars = checkedFiles.Where(f => f.Container.Contains("/skeletalmorphcfg/", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (avatars.Count == 0 && endfieldSelectedVirtualFile?.Container.Contains("/skeletalmorphcfg/", StringComparison.OrdinalIgnoreCase) == true)
+                avatars.Add(endfieldSelectedVirtualFile);
+            var animations = checkedFiles.Where(f => f.Container.Contains("/skeletalmorphanim/", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (endfieldVfsArchive == null || avatars.Count != 1 || animations.Length == 0)
+            {
+                MessageBox.Show(this, "Open Endfield VFS, check the animation .asset files under skeletalmorphanim, and select/check exactly one facial avatar .asset under skeletalmorphcfg. No PostModel is required.",
+                    "EFF facial animation export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using var dialog = new SaveFileDialog { Filter = "EFF Animation Library (*.eanim)|*.eanim", DefaultExt = "eanim",
+                FileName = avatars[0].Stem + ".eanim", InitialDirectory = saveDirectoryBackup };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            saveDirectoryBackup = Path.GetDirectoryName(dialog.FileName);
+            await endfieldPreviewLock.WaitAsync();
+            try
+            {
+                StatusStripUpdate($"Exporting {animations.Length} selected facial resources...");
+                var count = await Task.Run(() => EiemFacialAnimationExporter.Export(endfieldVfsArchive, endfieldWorkspace,
+                    avatars[0].Container, dialog.FileName, animations.Select(a => a.Container), assetsManager.SpecifyUnityVersion));
+                StatusStripUpdate($"Exported {count} compatible facial actions: {dialog.FileName}");
+            }
+            catch (Exception error)
+            {
+                Logger.Error(error.ToString());
+                MessageBox.Show(this, error.Message, "EFF facial animation export", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                StatusStripUpdate("Facial animation export failed; previous output retained.");
+            }
+            finally { endfieldPreviewLock.Release(); }
+        }
+
         private async Task ExportCheckedEndfieldPrefabsAsync(bool includeResources)
         {
-            var files = GetCheckedEndfieldPrefabFiles();
+            var files = GetCheckedEndfieldFiles();
             if (files.Count == 0)
             {
                 const string message = "No .prefab file is checked. The EFF package exporter only accepts logical .prefab files; character-data .asset files are not Prefabs.\n\nCheck chr_0028_wulfa_postmodel.prefab, then run this command again.";

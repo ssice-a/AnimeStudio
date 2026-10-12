@@ -1,6 +1,6 @@
 # Anime Studio
 
-本 EFF fork 发布 **v1.3.1**，配套 [EFF v1.3.1](https://github.com/ssice-a/EFF/releases/tag/v1.3.1) 与 [EFF Blender v0.40.1](https://github.com/ssice-a/EFF-blender/releases/tag/v0.40.1)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
+本 EFF fork 发布 **v1.4.0**，配套 [EFF v1.4.0](https://github.com/ssice-a/EFF/releases/tag/v1.4.0) 与 [EFF Blender v0.41.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.41.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
 
 ### 终末地 EFF 导出
 
@@ -8,6 +8,8 @@
 2. 导出 EFF 源包，将其中的 `mod.ini` 导入 Blender。包内 Mesh、Material、Texture、Skeleton 与源字段模板保持精确来源身份；详细结构见 [EFF_FORMAT.md](EFF_FORMAT.md)。
 3. 保留 `source/manifest.json`、`source/serialized/` 和来源索引供作者准备。`source/streams/` 是原始 Mesh/Texture 载荷快照，普通 Blender 导出不读取；结构文本是供人阅读的报告。这些文件不应全量放入游戏 Mod。
 4. Blender 使用自身配套工具据源 Mesh 确定全部 Prefab/Renderer 消费者，导出作者资源、`source-inputs.bin` 与独立 `compiled.bin`；游戏 DLL 读取编译结果，F10 提交整个 Mod 集合。
+
+独立表情库入口：勾选角色的 SkeletalMorph Avatar 与表情资源，使用 **Export → Format specific → EFF → Checked facial animations as EFF library...** 导出 `.eanim`，再由 Blender 的“文件 → 导入 → EFF 动画（选中骨架）”读取。不要求从 PostModel 导出；目前支持骨骼情绪姿态、口型及动态片段，Shader 表情与运行时随机调度不包含在动画库中。
 
 贴图等载荷现在优先使用可读短文件名，只在真实名称冲突时添加短后缀。完整 CAB/PathID 身份保留在 manifest 内，旧包带哈希的名称无需手动改名。包兼容性依据实际数据结构与字段验证，不按应用版本号拒绝。
 
@@ -54,6 +56,28 @@ The [official wiki](https://github.com/Escartem/AnimeStudio/wiki) goes into deta
 ---
 
 # Building
+
+## Endfield facial animation libraries
+
+Open the Endfield VFS in Logical Asset Paths. Under
+`assets/beyond/dynamicassets/gamedata/skeletalmorph/`, check animation assets in
+`skeletalmorphanim/emotion`, `pose`, or `morphanimation`, and check/select one
+facial avatar asset in `skeletalmorphcfg` (for example
+`girl/data_facemorph_avatar_liino.asset`). Use **Export → Format specific → EFF →
+Checked facial animations as EFF library...** to save an `.eanim` library.
+No PostModel is required. Only the selected resources and the avatar's original
+skeleton are read; incompatible controls are recorded as skipped.
+
+In EFF Blender, select an imported source armature and use **File → Import → EFF
+动画（选中骨架）**. The library contains bone poses/animations for authoring,
+not a runtime animation replacement Mod. Shader expression parameters and
+random blink scheduling are excluded. Regular AnimationClip FBX export is unchanged.
+
+Headless GUI entry point (selection JSON is an array of logical animation paths):
+
+```text
+AnimeStudio.GUI.exe --export-eff-animations <vfs-root> <workspace> <logical-avatar.asset> <selection.json> <output.eanim> [--unity-version <version>]
+```
 
 You need Visual Studio 2022 with the C++ desktop workload and the .NET 9 and 10 SDKs.
 
