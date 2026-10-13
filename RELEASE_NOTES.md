@@ -1,20 +1,22 @@
-# AnimeStudio v1.4.0
+# AnimeStudio v1.5.0
 
-配套：[EFF v1.4.0](https://github.com/ssice-a/EFF/releases/tag/v1.4.0)、[EFF Blender v0.41.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.41.0)。
+配套：[EFF v1.5.0](https://github.com/ssice-a/EFF/releases/tag/v1.5.0)、[EFF Blender v0.42.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.42.0)。
 
-- 导出 EFF 精确来源包：Mesh、材质、贴图、骨架、物理证据、字段模板和 manifest 保持 CAB/PathID 来源身份。
-- 独立导出 SkeletalMorph 骨骼情绪姿态、口型和动态片段到 `.eanim`，供 Blender 选中骨架导入；不需要 PostModel。
-- 入口：勾选角色 SkeletalMorph Avatar 和表情资源，选择 **Export → Format specific → EFF → Checked facial animations as EFF library...**。
-- 资源文件使用短名称，真实冲突添加后缀；旧哈希文件名仍通过各自 manifest 解析。解包器文件不进入游戏 DLL 安装包。
+- 打开游戏目录、上一级 games 目录或已安装 VFS，自动合并 StreamingAssets 与 Persistent；按块版本和内容选择当前来源，缺少新载荷时不回退为不同内容的旧资源。
+- 游戏更新后按逐 Bundle 内容 MD5 和长度增量更新索引：只解析新增/变化的包，复用未变资产与 CAB 依赖，清理删除项。CHK 位置和范围变化但内容未变时继续复用。
+- 精确匹配当前资源的完整旧索引可直接迁移，不重新解析全部游戏包。索引格式保持，旁边增加单个 .eidx.bundles 文件；升级软件但解析规则未变时继续复用。
+- 加入失败重试、可校验的断点恢复与构建期间资源变化拒绝；进度显示 parsed/reused/removed。自动化入口：`AnimeStudio.GUI.exe --update-eff-index <game-or-VFS> <workspace>`。
 
-选择与 .NET Desktop Runtime 匹配的 net9.0-windows 或 net10.0-windows 包，解压运行 AnimeStudio.GUI.exe。最终 Mod 由 Blender 编译，玩家不需要作者索引或原包快照。发布不含游戏资源。
+重新打开游戏目录，继续选择原工作区；请保留 index/。预下载 ZIP/差分不作为已安装资源，等待启动器正式安装后更新索引。源包、Blender 工程和游戏 Mod 不会因索引更新自动重新导出。
 
-本地 net9 GUI/CLI Release、来源契约及实际表情导出/导入通过；Liino 样本 182 个源资源生成 119 个 Action。net10 由发布流水线构建。Shader 表情参数、随机调度及完整特殊压缩 AnimationClip 通用导出不属于此入口。
+增量与冷构建逐字节对照、删除/移动/失败/断点/损坏/解析语义失效回归通过。真实 8 包更新只解析 2 包、复用 6 包；既有完整 255842 包索引迁移的解析数为 0，原 eidx 摘要保持一致。更新仍有目录比较及紧凑索引 I/O，未来实际大版本更新耗时需观察。
+
+选择与 Windows x64 .NET Desktop Runtime 匹配的 net9.0-windows 或 net10.0-windows 附件。解包器、Blender 与游戏运行 DLL 独立安装；附件不含游戏资源。
 
 ## English
 
-EFF source packages preserve exact CAB/PathID identities, field templates, native resource data and physics evidence. Export selected SkeletalMorph Avatar and facial resources through **Export → Format specific → EFF → Checked facial animations as EFF library...** to produce a standalone `.eanim` library for the paired Blender add-on. A PostModel is not required.
+Open the installed game, its games parent or VFS folder to merge shipped and Persistent resource layers. Active block versions and content determine ownership; missing updated payloads never silently fall back to different old bytes. Predownload ZIPs/deltas are not installed resources.
 
-The library covers bone emotion poses, visemes and dynamic segments; shader expressions, random scheduling and general special-compressed AnimationClip extraction are outside this entry point. The Liino sample produced 119 Actions from 182 source resources. Source contracts, .NET 9 builds and actual library export/import passed local checks; .NET 10 builds run in the release workflow.
+Index updates parse only new or changed Bundles, reuse unchanged asset/CAB records and remove deleted entries. Content-preserving CHK relocation reuses records. A complete legacy index at the exact current resource identity can be adopted without reparsing game Bundles. Keep the workspace index directory and its single .eidx.bundles sidecar.
 
-Use the archive matching your Windows x64 .NET Desktop Runtime. The unpacker, add-on and game runtime remain separate installations. No game assets are distributed.
+Incremental/cold byte equality and failure, resume, corruption and concurrent-update cases passed, including isolated real Bundles and migration of an existing 255842-Bundle index. Updates still compare metadata and read/write compact index records; future full game-update latency remains to be measured. Use the archive matching your Windows x64 .NET Desktop Runtime. No game assets are distributed.

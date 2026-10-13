@@ -1,10 +1,10 @@
 # Anime Studio
 
-本 EFF fork 发布 **v1.4.0**，配套 [EFF v1.4.0](https://github.com/ssice-a/EFF/releases/tag/v1.4.0) 与 [EFF Blender v0.41.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.41.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
+本 EFF fork 发布 **v1.5.0**，配套 [EFF v1.5.0](https://github.com/ssice-a/EFF/releases/tag/v1.5.0) 与 [EFF Blender v0.42.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.42.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
 
 ### 终末地 EFF 导出
 
-1. 选择终末地并打开游戏 VFS，建立或读取来源索引，在资源列表中选择需要制作的 Prefab。
+1. 选择终末地，打开游戏目录或上一级 `games` 目录，再选择原工作区。工具自动读取基础与热更新 VFS：首次建立索引，后续游戏更新只重新解析新增或变化的 Bundle，复用未变记录、移除删除项；资源未变直接复用索引。多份终末地安装需明确选择一份。
 2. 导出 EFF 源包，将其中的 `mod.ini` 导入 Blender。包内 Mesh、Material、Texture、Skeleton 与源字段模板保持精确来源身份；详细结构见 [EFF_FORMAT.md](EFF_FORMAT.md)。
 3. 保留 `source/manifest.json`、`source/serialized/` 和来源索引供作者准备。`source/streams/` 是原始 Mesh/Texture 载荷快照，普通 Blender 导出不读取；结构文本是供人阅读的报告。这些文件不应全量放入游戏 Mod。
 4. Blender 使用自身配套工具据源 Mesh 确定全部 Prefab/Renderer 消费者，导出作者资源、`source-inputs.bin` 与独立 `compiled.bin`；游戏 DLL 读取编译结果，F10 提交整个 Mod 集合。
@@ -12,6 +12,8 @@
 独立表情库入口：勾选角色的 SkeletalMorph Avatar 与表情资源，使用 **Export → Format specific → EFF → Checked facial animations as EFF library...** 导出 `.eanim`，再由 Blender 的“文件 → 导入 → EFF 动画（选中骨架）”读取。不要求从 PostModel 导出；目前支持骨骼情绪姿态、口型及动态片段，Shader 表情与运行时随机调度不包含在动画库中。
 
 贴图等载荷现在优先使用可读短文件名，只在真实名称冲突时添加短后缀。完整 CAB/PathID 身份保留在 manifest 内，旧包带哈希的名称无需手动改名。包兼容性依据实际数据结构与字段验证，不按应用版本号拒绝。
+
+本次发布支持增量来源索引。请保留工作区 `index/`：原 `endfield_assets.eidx` 旁增加一个 `.eidx.bundles` 文件，用于记录每 Bundle 的内容身份与索引范围，不生成逐包小文件。精确匹配当前资源的旧完整两层索引可直接迁移，旧游戏身份且缺少逐包记录时才需要重新建立基线；升级软件不因版本标签直接使索引失效。变化更新仍需读写紧凑索引，进度显示 parsed/reused/removed。已有导出源包、Blender 工程和游戏 Mod 不会因索引更新自动重导出。
 
 本 EFF fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
 发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。

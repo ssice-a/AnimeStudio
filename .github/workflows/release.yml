@@ -39,6 +39,11 @@ jobs:
           dotnet-version: |
             9.0.x
             10.0.x
+      - name: Verify incremental VFS index contracts
+        shell: pwsh
+        run: |
+          dotnet run --project AnimeStudio.IndexTests/AnimeStudio.IndexTests.csproj -c Release -p:TargetFrameworks=net9.0-windows
+          if ($LASTEXITCODE -ne 0) { throw 'Incremental index regression failed' }
       - name: Build and package GUI and CLI
         shell: pwsh
         run: ./build.ps1

@@ -14,6 +14,11 @@ namespace AnimeStudio.GUI
         [STAThread]
         static void Main(string[] args)
         {
+            if (args?.Length > 0 && string.Equals(args[0], "--update-eff-index", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = EndfieldIndexCommand.Run(args);
+                return;
+            }
             if (args?.Length > 0 && string.Equals(args[0], "--export-eff-animations", StringComparison.OrdinalIgnoreCase))
             {
                 Environment.ExitCode = EndfieldFacialAnimationCommand.Run(args);

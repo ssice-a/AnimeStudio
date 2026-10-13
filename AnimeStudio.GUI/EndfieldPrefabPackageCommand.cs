@@ -75,6 +75,7 @@ namespace AnimeStudio.GUI
                 if (root == null)
                     throw new InvalidDataException($"Prefab root '{exportIndex.Prefab.Stem}' was not found in its dependency closure.");
 
+                archive.VerifyCurrent();
                 if (!Exporter.ExportEndfieldPrefab(exportIndex.Prefab, root, outputRoot, includeResources: true,
                         exportIndex.Assets, exportIndex.Dependencies, exportIndex.VfsFingerprint))
                     throw new InvalidDataException("Prefab package export reported an error. See export-errors.txt in the package directory.");

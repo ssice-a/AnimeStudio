@@ -497,8 +497,21 @@ namespace AnimeStudio.GUI
             return Path.Combine(new[] { root }.Concat(relative).ToArray());
         }
 
+        private bool VerifyEndfieldArchive()
+        {
+            try { endfieldVfsArchive?.VerifyCurrent(); return true; }
+            catch (Exception error)
+            {
+                Logger.Error(error.ToString());
+                MessageBox.Show(this, error.Message, "Endfield VFS changed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                StatusStripUpdate("VFS changed; reopen the game folder before exporting.");
+                return false;
+            }
+        }
+
         private bool ExportEiemBundle(string outputRoot, string logicalPath)
         {
+            if (!VerifyEndfieldArchive()) return false;
             var normalized = EndfieldVfsArchive.NormalizeLogicalPath(logicalPath);
             if (string.IsNullOrWhiteSpace(normalized) || endfieldVfsArchive == null ||
                 !endfieldVfsArchive.TryGet(normalized, out var entry))
@@ -508,9 +521,6 @@ namespace AnimeStudio.GUI
             var directory = Path.GetDirectoryName(output);
             if (!string.IsNullOrWhiteSpace(directory))
                 Directory.CreateDirectory(directory);
-            if (File.Exists(output) && new FileInfo(output).Length == entry.Length)
-                return true;
-
             var temp = output + ".tmp";
             File.WriteAllBytes(temp, endfieldVfsArchive.ReadPayload(normalized));
             File.Move(temp, output, true);
@@ -521,16 +531,17 @@ namespace AnimeStudio.GUI
         {
             var vfsDialog = new OpenFolderDialog
             {
-                Title = "Select Endfield VFS folder (the folder containing .blc and .chk files)",
+                Title = "Select Endfield game folder, games parent, or VFS folder",
                 InitialFolder = FindDefaultEndfieldVfsRoot()
             };
             if (vfsDialog.ShowDialog(this) != DialogResult.OK)
                 return;
 
-            var vfsRoot = ResolveEndfieldVfsRoot(vfsDialog.Folder);
-            if (vfsRoot == null)
+            string vfsRoot;
+            try { vfsRoot = EndfieldVfsArchive.ResolveSelection(vfsDialog.Folder); }
+            catch (Exception error)
             {
-                MessageBox.Show(this, "The selected folder does not contain Endfield .blc/.chk files.",
+                MessageBox.Show(this, error.Message,
                     "Invalid Endfield VFS", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
@@ -579,7 +590,7 @@ namespace AnimeStudio.GUI
                 assetsManager.Game = Studio.Game;
                 assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
                 Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - Endfield VFS";
-                StatusStripUpdate($"Ready: {endfieldVfsArchive.Entries.Count:N0} VFS files, {endfieldVirtualPathIndex.AssetCount:N0} assets, {endfieldDependencyIndex.CabCount:N0} CABs. Select an asset to preview it.");
+                StatusStripUpdate($"Ready: {archive.LayerCount} VFS layer(s), {archive.Entries.Count:N0} files, {endfieldVirtualPathIndex.AssetCount:N0} assets, {endfieldDependencyIndex.CabCount:N0} CABs; {archive.MissingPayloadCount:N0} unavailable payloads. Select an asset to preview it.");
             }
             catch (OperationCanceledException)
             {
@@ -606,25 +617,13 @@ namespace AnimeStudio.GUI
                 TimeSpan.FromSeconds((value.TotalBundles - value.ProcessedBundles) / rate);
             StatusStripUpdate(
                 $"Indexing VFS {value.ProcessedBundles:N0}/{value.TotalBundles:N0} ({percent}%) | " +
+                $"parsed {value.ParsedBundles:N0} | reused {value.ReusedBundles:N0} | removed {value.RemovedBundles:N0} | " +
                 $"assets {value.AssetCount:N0} | CABs {value.CabCount:N0} | failed {value.FailedBundles:N0} | ETA {remaining:hh\\:mm\\:ss}");
         }
 
         private string FindDefaultEndfieldVfsRoot()
         {
             return endfieldVfsArchive?.VfsRoot ?? Environment.CurrentDirectory;
-        }
-
-        private static string ResolveEndfieldVfsRoot(string selectedPath)
-        {
-            var candidates = new[]
-            {
-                selectedPath,
-                Path.Combine(selectedPath, "Endfield_Data", "StreamingAssets", "VFS"),
-                Path.Combine(selectedPath, "StreamingAssets", "VFS")
-            };
-            return candidates.FirstOrDefault(path => Directory.Exists(path) &&
-                Directory.EnumerateFiles(path, "*.blc", SearchOption.AllDirectories).Any() &&
-                Directory.EnumerateFiles(path, "*.chk", SearchOption.AllDirectories).Any());
         }
 
         private void endfieldVirtualPathsToolStripMenuItem_Click(object sender, EventArgs e)
@@ -3762,6 +3761,7 @@ namespace AnimeStudio.GUI
 
         private async Task ExportCheckedEndfieldAnimationsAsync()
         {
+            if (!VerifyEndfieldArchive()) return;
             var checkedFiles = GetCheckedEndfieldFiles(prefabsOnly: false);
             var avatars = checkedFiles.Where(f => f.Container.Contains("/skeletalmorphcfg/", StringComparison.OrdinalIgnoreCase)).ToList();
             if (avatars.Count == 0 && endfieldSelectedVirtualFile?.Container.Contains("/skeletalmorphcfg/", StringComparison.OrdinalIgnoreCase) == true)
@@ -3796,6 +3796,7 @@ namespace AnimeStudio.GUI
 
         private async Task ExportCheckedEndfieldPrefabsAsync(bool includeResources)
         {
+            if (!VerifyEndfieldArchive()) return;
             var files = GetCheckedEndfieldFiles();
             if (files.Count == 0)
             {
@@ -3837,6 +3838,7 @@ namespace AnimeStudio.GUI
 
         private async Task ExportEndfieldVirtualAssets(List<VirtualAssetRecord> records, string output)
         {
+            if (!VerifyEndfieldArchive()) return;
             var exported = 0;
             var skipped = 0;
             foreach (var batch in records.GroupBy(x => x.Source, StringComparer.OrdinalIgnoreCase))

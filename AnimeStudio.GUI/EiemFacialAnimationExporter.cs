@@ -19,6 +19,7 @@ internal static class EiemFacialAnimationExporter
     internal static int Export(EndfieldVfsArchive archive, string workspace, string avatarPath,
         string output, IEnumerable<string> animationPaths, string unityVersion = null, Action<string> progress = null)
     {
+        archive.VerifyCurrent();
         if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out var indexPath))
             throw new InvalidDataException("Open/index the Endfield VFS before exporting animations.");
         var target = avatarPath.Replace('\\', '/').Trim('/');

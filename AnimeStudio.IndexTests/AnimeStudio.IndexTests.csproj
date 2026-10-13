@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AnimeStudio/AnimeStudio.csproj" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldVfsArchive.cs" Link="EndfieldVfsArchive.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldBundleIndexCache.cs" Link="EndfieldBundleIndexCache.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldVfsAssetIndexBuilder.cs" Link="EndfieldVfsAssetIndexBuilder.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldIndexStore.cs" Link="EndfieldIndexStore.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldBundleDependencyIndex.cs" Link="EndfieldBundleDependencyIndex.cs" />
+    <Compile Include="../AnimeStudio.GUI/VirtualAssetPathIndex.cs" Link="VirtualAssetPathIndex.cs" />
+  </ItemGroup>
+</Project>
