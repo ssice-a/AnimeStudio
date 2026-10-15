@@ -8,7 +8,9 @@
     <ProjectReference Include="../AnimeStudio/AnimeStudio.csproj" />
     <Compile Include="../AnimeStudio.GUI/EndfieldVfsArchive.cs" Link="EndfieldVfsArchive.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldBundleIndexCache.cs" Link="EndfieldBundleIndexCache.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldPortableIndex.cs" Link="EndfieldPortableIndex.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldVfsAssetIndexBuilder.cs" Link="EndfieldVfsAssetIndexBuilder.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldIndexWorkspace.cs" Link="EndfieldIndexWorkspace.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldIndexStore.cs" Link="EndfieldIndexStore.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldBundleDependencyIndex.cs" Link="EndfieldBundleDependencyIndex.cs" />
     <Compile Include="../AnimeStudio.GUI/VirtualAssetPathIndex.cs" Link="VirtualAssetPathIndex.cs" />

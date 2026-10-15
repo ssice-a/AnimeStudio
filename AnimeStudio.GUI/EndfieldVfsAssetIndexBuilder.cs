@@ -15,11 +15,7 @@ namespace AnimeStudio.GUI
         long CabCount, int FailedBundles, string CurrentPath, TimeSpan Elapsed,
         int ParsedBundles = 0, int ReusedBundles = 0, int RemovedBundles = 0);
 
-    internal sealed record EndfieldIndexManifest(int FormatVersion, string VfsFingerprint, int BundleCount,
-        long AssetCount, long CabCount, int FailedBundles, long IndexLength, DateTime CreatedUtc,
-        string ParserIdentity = null, int ParsedBundles = 0, int ReusedBundles = 0, int RemovedBundles = 0);
-
-    internal static class EndfieldVfsAssetIndexBuilder
+    internal static partial class EndfieldVfsAssetIndexBuilder
     {
         private const int FormatVersion = EndfieldIndexStore.FormatVersion;
         private const int CheckpointInterval = 32;
@@ -28,29 +24,6 @@ namespace AnimeStudio.GUI
         private sealed record Checkpoint(int FormatVersion, string VfsFingerprint, int NextBundle,
             long OutputLength, long AssetCount, long CabCount, int FailedBundles,
             string ParserIdentity, int ParsedBundles, int ReusedBundles, int RemovedBundles, string PrefixDigest);
-
-        public static string GetIndexPath(string workspace) => Path.Combine(Path.GetFullPath(workspace), "index", "endfield_assets.eidx");
-
-        private static EndfieldIndexManifest ReadManifest(string workspace)
-        {
-            try { return JsonSerializer.Deserialize<EndfieldIndexManifest>(File.ReadAllText(GetManifestPath(workspace))); }
-            catch (Exception ex) when (ex is IOException || ex is JsonException) { return null; }
-        }
-
-        public static bool TryGetCurrentIndex(EndfieldVfsArchive archive, string workspace, out string indexPath)
-        {
-            indexPath = GetIndexPath(workspace);var manifest = ReadManifest(workspace);
-            try
-            {
-                if (manifest == null || manifest.FormatVersion != FormatVersion || manifest.FailedBundles != 0 ||
-                    manifest.ParserIdentity != EndfieldBundleIndexCache.ParserIdentity || !File.Exists(EndfieldBundleIndexCache.PathFor(indexPath)) || manifest.VfsFingerprint != archive.Fingerprint ||
-                    manifest.BundleCount != archive.Entries.Values.Count(x => x.LogicalPath.EndsWith(".ab", StringComparison.OrdinalIgnoreCase))) return false;
-                using var index = File.OpenRead(indexPath);
-                return EndfieldBundleIndexCache.ValidateEnvelope(index, manifest.VfsFingerprint,
-                    manifest.IndexLength, manifest.AssetCount, manifest.CabCount, out _);
-            }
-            catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is ArgumentException) { return false; }
-        }
 
         public static Task<string> BuildAsync(EndfieldVfsArchive archive, string workspace, Game game,
             IProgress<EndfieldIndexProgress> progress, CancellationToken cancellationToken, int? bundleLimit = null) =>
@@ -248,6 +221,6 @@ namespace AnimeStudio.GUI
             }
         }
         private static string GetCheckpointPath(string workspace) => Path.Combine(Path.GetFullPath(workspace), "index", "endfield-index-progress.json");
-        private static string GetManifestPath(string workspace) => Path.Combine(Path.GetFullPath(workspace), "index", "endfield-index-manifest.json");
+
     }
 }

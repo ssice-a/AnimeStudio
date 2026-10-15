@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 
 namespace AnimeStudio.GUI
 {
@@ -19,6 +20,7 @@ namespace AnimeStudio.GUI
         private const int SkeletonVersion = 2;
         private readonly EndfieldBundleDependencyIndex dependencies;
         private readonly string vfsFingerprint;
+        private readonly string sourceIndex;
         private readonly Dictionary<string, List<VirtualAssetRecord>> assetsByIdentity =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Mesh, string> meshes = new();
@@ -34,6 +36,8 @@ namespace AnimeStudio.GUI
         private readonly List<string> renderSections = new();
         private readonly List<string> binaryFiles = new();
         private readonly Dictionary<string, string> payloadFiles = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, (string Section, string File)> previousResources = new(StringComparer.Ordinal);
+        private readonly HashSet<string> reservedSections = new(StringComparer.OrdinalIgnoreCase);
         private readonly List<EiemSourceManifestWriter.AuthorResource> sourceResources = new();
         private string rootDirectory;
         private GameObject root;
@@ -41,10 +45,11 @@ namespace AnimeStudio.GUI
         private HashSet<Transform> skeletonTransforms;
 
         public EiemPackageWriter(IReadOnlyList<VirtualAssetRecord> records,
-            EndfieldBundleDependencyIndex dependencies, string vfsFingerprint)
+            EndfieldBundleDependencyIndex dependencies, string vfsFingerprint, string sourceIndex = null)
         {
             this.dependencies = dependencies;
             this.vfsFingerprint = vfsFingerprint;
+            this.sourceIndex = sourceIndex;
             foreach (var record in records ?? Array.Empty<VirtualAssetRecord>())
             {
                 var key = AssetKey(record.Type, record.PathId);
@@ -57,7 +62,19 @@ namespace AnimeStudio.GUI
             }
         }
 
-        public bool Write(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory)
+        public bool Write(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory, Action beforeCommit = null)
+        {
+            EiemPackagePublication.Publish(outputDirectory, staging =>
+            {
+                ReadPreviousResources(outputDirectory);
+                if (!WriteStaged(prefab, prefabRoot, staging))
+                    throw new InvalidDataException("EFF source export failed; previous package retained: " + string.Join("; ", errors));
+                beforeCommit?.Invoke();
+            });
+            return true;
+        }
+
+        private bool WriteStaged(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory)
         {
             if (prefab == null || prefabRoot == null || string.IsNullOrWhiteSpace(outputDirectory))
                 return false;
@@ -74,6 +91,7 @@ namespace AnimeStudio.GUI
             renderSections.Clear();
             binaryFiles.Clear();
             payloadFiles.Clear();
+            foreach (var resource in previousResources.Values) payloadFiles.TryAdd(resource.File.Replace('/', Path.DirectorySeparatorChar), "reserved-source");
             sourceResources.Clear();
             skeleton = null;
 
@@ -166,7 +184,7 @@ namespace AnimeStudio.GUI
                 try
                 {
                     EiemSourceManifestWriter.Write(rootDirectory, prefab, root, dependencies,
-                        vfsFingerprint, sourceResources);
+                        vfsFingerprint, sourceResources, sourceIndex);
                 }
                 catch (Exception ex)
                 {
@@ -241,7 +259,7 @@ namespace AnimeStudio.GUI
                 return known;
             }
 
-            var section = UniqueName("Mesh", mesh.Name, meshes.Count);
+            var section = ResourceSection("Mesh", mesh, meshes.Count);
             var fileName = PayloadFileName("meshes", mesh, ".mesh");
             var source = ResolveLogicalPath(mesh, "Mesh");
             if (string.IsNullOrEmpty(source))
@@ -264,8 +282,9 @@ namespace AnimeStudio.GUI
             if (!string.IsNullOrEmpty(skeleton))
                 return skeleton;
 
-            var section = UniqueName("Skeleton", root.Name, 0);
-            var fileName = PayloadFileName("skeletons", root, ".skeleton");
+            var prior = previousResources.GetValueOrDefault(ResourceKey("Transform", null, ""));
+            var section = prior.Section ?? UniqueName("Skeleton", root.Name, 0);
+            var fileName = prior.File ?? PayloadFileName("skeletons", root, ".skeleton");
             WriteSkeleton(Path.Combine(rootDirectory, fileName));
             skeleton = section;
             sourceResources.Add(new(root.m_Transform, section, fileName, null));
@@ -298,7 +317,7 @@ namespace AnimeStudio.GUI
             if (materials.TryGetValue(material, out var known))
                 return known;
 
-            var section = UniqueName("Material", material.Name, materials.Count);
+            var section = ResourceSection("Material", material, materials.Count);
             var fileName = PayloadFileName("materials", material, ".mat");
             var source = ResolveLogicalPath(material, "Material");
             if (string.IsNullOrEmpty(source))
@@ -320,7 +339,7 @@ namespace AnimeStudio.GUI
             if (textures.TryGetValue(texture, out var known))
                 return known;
 
-            var section = UniqueName("Texture", texture.Name, textures.Count);
+            var section = ResourceSection("Texture", texture, textures.Count);
             var fileName = PayloadFileName("textures", texture, ".png");
             var source = ResolveLogicalPath(texture, "Texture2D") ?? ResolveLogicalPath(texture, "Texture");
             var originalName = texture.Name ?? string.Empty;
@@ -691,9 +710,46 @@ namespace AnimeStudio.GUI
 
         private string PayloadFileName(string directory, AnimeStudio.Object asset, string extension)
         {
+            var kind = asset.type.ToString();
+            var key = ResourceKey(kind, ResolveLogicalPath(asset, kind), asset.Name);
+            if (previousResources.TryGetValue(key, out var previous))
+            {
+                var stable = previous.File.Replace('/', Path.DirectorySeparatorChar);
+                if (!stable.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !stable.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Previous author filename has an incompatible resource kind: " + stable);
+                if (payloadFiles.TryGetValue(stable, out var used) && used != "reserved-source") throw new InvalidDataException("Duplicate stable author output: " + stable);
+                payloadFiles[stable] = asset.assetsFile.fileName + ":" + asset.m_PathID;return stable;
+            }
             var relative = EiemPackageIdentity.PayloadFileName(directory, asset.Name,
                 asset.assetsFile.fileName, asset.m_PathID, extension, payloadFiles);
             return relative;
+        }
+
+        private static string ResourceKey(string kind, string path, string name) => kind + "\n" + (path ?? "").Replace('\\', '/').ToLowerInvariant() + "\n" + name;
+
+        private void ReadPreviousResources(string package)
+        {
+            previousResources.Clear();reservedSections.Clear();
+            var manifest = Path.Combine(package, "source", "manifest.json");if (!File.Exists(manifest)) return;
+            using var json = JsonDocument.Parse(File.ReadAllText(manifest));
+            foreach (var row in json.RootElement.GetProperty("resources").EnumerateArray())
+            {
+                if (!row.TryGetProperty("authorSection", out var section) || !row.TryGetProperty("authorFile", out var file)) continue;
+                var relative = file.GetString()!;var full = Path.GetFullPath(Path.Combine(package, relative));
+                if (!full.StartsWith(Path.GetFullPath(package).TrimEnd('\\') + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Previous source filename escapes package");
+                var key = ResourceKey(row.GetProperty("type").GetString()!, row.GetProperty("logicalPath").GetString(), row.GetProperty("name").GetString());
+                if (!previousResources.TryAdd(key, (section.GetString()!, relative))) throw new InvalidDataException("Ambiguous previous logical source identity: " + key);
+                reservedSections.Add(section.GetString()!);
+            }
+        }
+
+        private string ResourceSection(string prefix, AnimeStudio.Object asset, int index)
+        {
+            var kind = asset.type.ToString();
+            if (previousResources.TryGetValue(ResourceKey(kind, ResolveLogicalPath(asset, kind), asset.Name), out var previous)) return previous.Section;
+            var candidate = UniqueName(prefix, asset.Name, index);
+            while (!reservedSections.Add(candidate)) candidate = UniqueName(prefix, asset.Name, ++index);
+            return candidate;
         }
 
         private static string Sanitize(string value)

@@ -32,7 +32,32 @@ namespace AnimeStudio.GUI
                 if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out var indexPath))
                     throw new InvalidDataException("No current Endfield index exists for this VFS and workspace.");
 
-                var exportIndex = EndfieldIndexStore.LoadPrefabExportIndex(indexPath, prefabPath);
+                var packageDirectory = Path.Combine(outputRoot,
+                    Path.GetDirectoryName(prefabPath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty,
+                    Path.GetFileNameWithoutExtension(prefabPath) + ".eff");
+                ExportOne(archive, workspace, prefabPath, packageDirectory, args.Length == 7 ? args[6] : null);
+                EndfieldSourceRefresh.Remember(workspace, packageDirectory);
+                WriteStatus(outputRoot, "success", $"EFF package exported: {packageDirectory}");
+                Console.WriteLine($"EFF package exported: {packageDirectory}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteStatus(outputRoot, "failed", ex.ToString());
+                Console.Error.WriteLine(ex);
+                return 1;
+            }
+        }
+
+        internal static void ExportOne(EndfieldVfsArchive archive, string workspace, string prefabPath,
+            string packageDirectory, string unityVersion = null, EndfieldPrefabExportIndex preparedIndex = null)
+        {
+            if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out var indexPath))
+                throw new InvalidDataException("No current Endfield source index; update the workspace first");
+            var flags = Enum.GetValues<ClassIDType>().Distinct().ToDictionary(t => t, t => (t.CanParse(), t.CanExport()));
+            try
+            {
+                var exportIndex = preparedIndex ?? EndfieldIndexStore.LoadPrefabExportIndex(indexPath, prefabPath);
                 if (!string.Equals(exportIndex.VfsFingerprint, archive.Fingerprint, StringComparison.Ordinal))
                     throw new InvalidDataException("The Endfield index belongs to a different VFS version.");
 
@@ -60,13 +85,15 @@ namespace AnimeStudio.GUI
                 var manager = new AssetsManager
                 {
                     Game = GameManager.GetGameByType(GameType.ArknightsEndfield),
-                    SpecifyUnityVersion = args.Length == 7 ? args[6] : null,
+                    SpecifyUnityVersion = unityVersion,
                     ResolveDependencies = false,
                     FilterData = new AssetsManager.AssetFilterData
                     {
                         Items = new System.Collections.Generic.List<AssetsManager.AssetFilterDataItem>()
                     }
                 };
+                try
+                {
                 manager.LoadFiles(closure, mergeSplitAssets: false);
                 var sourceCabs = exportIndex.Dependencies.GetCabNames(source);
                 var root = EndfieldPrefabDocument.FindRoot(
@@ -76,23 +103,13 @@ namespace AnimeStudio.GUI
                     throw new InvalidDataException($"Prefab root '{exportIndex.Prefab.Stem}' was not found in its dependency closure.");
 
                 archive.VerifyCurrent();
-                if (!Exporter.ExportEndfieldPrefab(exportIndex.Prefab, root, outputRoot, includeResources: true,
-                        exportIndex.Assets, exportIndex.Dependencies, exportIndex.VfsFingerprint))
-                    throw new InvalidDataException("Prefab package export reported an error. See export-errors.txt in the package directory.");
-
-                var packageDirectory = Path.Combine(outputRoot,
-                    Path.GetDirectoryName(prefabPath.Replace('/', Path.DirectorySeparatorChar)) ?? string.Empty,
-                    Path.GetFileNameWithoutExtension(prefabPath) + ".eff");
-                WriteStatus(outputRoot, "success", $"EFF package exported: {packageDirectory}");
-                Console.WriteLine($"EFF package exported: {packageDirectory}");
-                return 0;
+                new EiemPackageWriter(exportIndex.Assets, exportIndex.Dependencies, exportIndex.VfsFingerprint, indexPath)
+                    .Write(exportIndex.Prefab, root, packageDirectory, archive.VerifyCurrent);
+                archive.VerifyCurrent();
+                }
+                finally { manager.Clear(); }
             }
-            catch (Exception ex)
-            {
-                WriteStatus(outputRoot, "failed", ex.ToString());
-                Console.Error.WriteLine(ex);
-                return 1;
-            }
+            finally { TypeFlags.SetTypes(flags); }
         }
 
         private static void WriteStatus(string outputRoot, string result, string detail)

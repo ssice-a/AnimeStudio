@@ -23,6 +23,7 @@ namespace AnimeStudio.GUI
             {
                 var archive = EndfieldVfsArchive.Open(args[1]);var progress = new Progress();
                 var index = EndfieldVfsAssetIndexBuilder.BuildAsync(archive, args[2], GameManager.GetGameByType(GameType.ArknightsEndfield), progress, CancellationToken.None).GetAwaiter().GetResult();
+                EndfieldSourceRefresh.Refresh(archive, args[2], null, CancellationToken.None);
                 Console.WriteLine($"INDEX-PREPARED path={index} parsed={progress.Last.ParsedBundles} reused={progress.Last.ReusedBundles} removed={progress.Last.RemovedBundles} ms={progress.Last.Elapsed.TotalMilliseconds:F2}");
                 return 0;
             }

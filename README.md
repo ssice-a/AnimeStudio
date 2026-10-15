@@ -1,6 +1,6 @@
 # Anime Studio
 
-本 EFF fork 发布 **v1.5.0**，配套 [EFF v1.5.0](https://github.com/ssice-a/EFF/releases/tag/v1.5.0) 与 [EFF Blender v0.42.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.42.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
+本 EFF fork 发布 **v1.6.0**，配套 [EFF v1.7.0](https://github.com/ssice-a/EFF/releases/tag/v1.7.0) 与 [EFF Blender v0.44.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.44.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
 
 ### 终末地 EFF 导出
 
@@ -13,7 +13,7 @@
 
 贴图等载荷现在优先使用可读短文件名，只在真实名称冲突时添加短后缀。完整 CAB/PathID 身份保留在 manifest 内，旧包带哈希的名称无需手动改名。包兼容性依据实际数据结构与字段验证，不按应用版本号拒绝。
 
-本次发布支持增量来源索引。请保留工作区 `index/`：原 `endfield_assets.eidx` 旁增加一个 `.eidx.bundles` 文件，用于记录每 Bundle 的内容身份与索引范围，不生成逐包小文件。精确匹配当前资源的旧完整两层索引可直接迁移，旧游戏身份且缺少逐包记录时才需要重新建立基线；升级软件不因版本标签直接使索引失效。变化更新仍需读写紧凑索引，进度显示 parsed/reused/removed。已有导出源包、Blender 工程和游戏 Mod 不会因索引更新自动重导出。
+本次发布支持增量来源索引。请保留工作区 `index/`：原 `endfield_assets.eidx` 旁增加一个 `.eidx.bundles` 文件，用于记录每 Bundle 的内容身份与索引范围，不生成逐包小文件。精确匹配当前资源的旧完整两层索引可直接迁移，旧游戏身份且缺少逐包记录时才需要重新建立基线；升级软件不因版本标签直接使索引失效。变化更新仍需读写紧凑索引，进度显示 parsed/reused/removed。新版支持 BLC v5。打开当前游戏及原工作区后，会更新工作区已有和已登记的解包源包；其他目录可从 EFF 菜单选择 Update previously unpacked EFF resources。旧源包完整备份，保留逻辑资源的文件名和段名。原 Blender 工程可接受更新后的来源并重新导出；解包器不会自动保存 blend 或修改游戏 Mod。
 
 本 EFF fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
 发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。

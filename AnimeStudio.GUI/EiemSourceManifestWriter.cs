@@ -25,7 +25,7 @@ namespace AnimeStudio.GUI
 
         public static void Write(string package, VirtualAssetFile prefab, GameObject root,
             EndfieldBundleDependencyIndex dependencies, string vfsFingerprint,
-            IReadOnlyList<AuthorResource> resources)
+            IReadOnlyList<AuthorResource> resources, string sourceIndex = null)
         {
             if (dependencies == null || string.IsNullOrWhiteSpace(vfsFingerprint))
                 throw new InvalidDataException("Source baseline requires the current VFS and dependency index.");
@@ -182,7 +182,7 @@ namespace AnimeStudio.GUI
             var manifest = new
             {
                 format = "EFFSOURCE", version = 1, purpose = "author-source-baseline",
-                nativePack = false, runtimeNativeMemory = false, vfsFingerprint,
+                nativePack = false, runtimeNativeMemory = false, vfsFingerprint, sourceIndex,
                 prefab = prefab.Container.Replace('\\', '/'), root = Identity(root), sourceBundle = source,
                 containerEntries = entries, closure,
                 resources = resources.Select(r => new { identity = Identity(r.Asset),

@@ -260,6 +260,7 @@ namespace AnimeStudio.GUI
 
             var rawVersion = reader.ReadInt32();
             var codeVersion = rawVersion < 11 ? rawVersion : 3;
+            // BLC v5 widens both chunk and file tags from 32 to 64 bits.
             var blockVersion = rawVersion < 11 ? reader.ReadInt32() : rawVersion;
             _ = ReadAscii(reader, reader.ReadUInt16());
             var blockKey = reader.ReadUInt64().ToString("X16");
@@ -276,7 +277,7 @@ namespace AnimeStudio.GUI
                 _ = reader.ReadInt64();
                 _ = reader.ReadByte();
                 if (codeVersion > 3)
-                    _ = reader.ReadInt32();
+                    _ = codeVersion >= 5 ? reader.ReadUInt64() : reader.ReadUInt32();
                 var fileCount = ReadCount(reader, "file", blcPath);
                 var chunkPath = Path.Combine(Path.GetDirectoryName(blcPath)!, $"{chunkMd5}.chk");
                 if (!chunkDigests.TryAdd(chunkPath, chunkContentMd5) && chunkDigests[chunkPath] != chunkContentMd5)
@@ -295,7 +296,7 @@ namespace AnimeStudio.GUI
                     var encrypted = reader.ReadByte() != 0;
                     var ivSeed = encrypted ? reader.ReadInt64() : 0;
                     if (codeVersion > 3)
-                        _ = reader.ReadInt32();
+                        _ = codeVersion >= 5 ? reader.ReadUInt64() : reader.ReadUInt32();
 
                     if (string.IsNullOrWhiteSpace(logicalPath))
                         continue;

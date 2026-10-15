@@ -164,6 +164,8 @@ namespace AnimeStudio.GUI
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: false));
             eiemMenu.DropDownItems.Add("Checked Prefab as EFF mod package...", null,
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: true));
+            eiemMenu.DropDownItems.Add("Update previously unpacked EFF resources...", null,
+                async (_, _) => await RefreshUnpackedEndfieldSourcesAsync());
             eiemMenu.DropDownItems.Add("Checked facial animations as EFF library...", null,
                 async (_, _) => await ExportCheckedEndfieldAnimationsAsync());
             formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
@@ -574,6 +576,12 @@ namespace AnimeStudio.GUI
                         archive, workspace, game, progress, endfieldIndexCancellation.Token);
                 }
 
+                var sourceProgress = new Progress<string>(message => StatusStripUpdate(message));
+                var sourceUnityVersion = specifyUnityVersion.Text;
+                await endfieldPreviewLock.WaitAsync();
+                try { await Task.Run(() => EndfieldSourceRefresh.Refresh(archive, workspace, sourceProgress, endfieldIndexCancellation.Token, unityVersion: sourceUnityVersion)); }
+                catch (IOException error) { Logger.Error(error.ToString());MessageBox.Show(this, error.Message, "Some EFF sources were retained"); }
+                finally { endfieldPreviewLock.Release(); }
                 StatusStripUpdate("Loading compact Endfield resource paths and dependencies...");
                 var loadedIndex = await Task.Run(() => EndfieldIndexStore.Load(mapPath));
                 if (!string.Equals(loadedIndex.VfsFingerprint, archive.Fingerprint, StringComparison.Ordinal))
@@ -3827,13 +3835,39 @@ namespace AnimeStudio.GUI
                 if (root != null && await Task.Run(() =>
                         Exporter.ExportEndfieldPrefab(file, root, folder.Folder, includeResources,
                             endfieldVirtualAssetRecords.ToArray(), endfieldDependencyIndex,
-                            endfieldVfsArchive?.Fingerprint)))
+                            endfieldVfsArchive?.Fingerprint,
+                            EndfieldVfsAssetIndexBuilder.GetIndexPath(endfieldWorkspace), endfieldVfsArchive.VerifyCurrent)))
+                {
                     exported++;
+                    if (includeResources)
+                    {
+                        var relative = file.Container.Replace('/', Path.DirectorySeparatorChar);
+                        EndfieldSourceRefresh.Remember(endfieldWorkspace, Path.Combine(folder.Folder,
+                            Path.GetDirectoryName(relative) ?? "", Path.GetFileNameWithoutExtension(file.Name) + ".eff"));
+                    }
+                }
                 StatusStripUpdate($"Prefab export: {exported}/{files.Count} completed");
             }
             StatusStripUpdate($"Finished Prefab export: {exported}/{files.Count} completed");
             if (exported > 0 && Properties.Settings.Default.openAfterExport)
                 Studio.OpenFolderInExplorer(folder.Folder);
+        }
+
+        private async Task RefreshUnpackedEndfieldSourcesAsync()
+        {
+            if (!VerifyEndfieldArchive()) return;
+            using var folder = new FolderBrowserDialog { Description = "Select the existing unpacked resource directory" };
+            if (folder.ShowDialog(this) != DialogResult.OK) return;
+            await endfieldPreviewLock.WaitAsync();
+            try
+            {
+                var progress = new Progress<string>(message => StatusStripUpdate(message));
+                var unityVersion = specifyUnityVersion.Text;
+                await Task.Run(() => EndfieldSourceRefresh.Refresh(endfieldVfsArchive, endfieldWorkspace,
+                    progress, endfieldIndexCancellation.Token, folder.SelectedPath, unityVersion));
+            }
+            catch (Exception error) { MessageBox.Show(this, error.Message, "EFF source update"); }
+            finally { endfieldPreviewLock.Release(); }
         }
 
         private async Task ExportEndfieldVirtualAssets(List<VirtualAssetRecord> records, string output)

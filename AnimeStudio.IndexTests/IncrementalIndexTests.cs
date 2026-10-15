@@ -45,7 +45,9 @@ internal static class IncrementalIndexTests
     public static int Real(string gamePath, string outputRoot)
     {
         if (Directory.Exists(outputRoot)) throw new IOException("Real incremental fixture must be new");
-        var archive = EndfieldVfsArchive.Open(gamePath);var originals = archive.Entries.Values.Where(b => b.LogicalPath.EndsWith(".ab", StringComparison.OrdinalIgnoreCase)).OrderBy(b => b.LogicalPath, StringComparer.OrdinalIgnoreCase).Take(9).ToArray();
+        var archive = EndfieldVfsArchive.Open(gamePath);var bundles = archive.Entries.Values.Where(b => b.LogicalPath.EndsWith(".ab", StringComparison.OrdinalIgnoreCase)).OrderBy(b => b.LogicalPath, StringComparer.OrdinalIgnoreCase).ToArray();
+        Check(bundles.Length >= 9, "Real fixture needs at least nine Bundles");
+        var originals = Enumerable.Range(0, 9).Select(n => bundles[n * (bundles.Length - 1) / 8]).ToArray();
         var samples = originals.Select((b, i) => (Path: $"bundles/sample{i:D2}.ab", Payload: archive.ReadPayload(b.LogicalPath))).ToArray();
         var vfs = Path.Combine(outputRoot, "vfs");var workspace = Path.Combine(outputRoot, "incremental");var progress = new Progress();var game = GameManager.GetGameByType(GameType.ArknightsEndfield);
         PayloadBlock(vfs, 100, samples.Take(8).ToArray());
@@ -139,6 +141,23 @@ internal static class IncrementalIndexTests
             SHA256.HashData(bytes.AsSpan(0, bytes.Length - 32)).CopyTo(bytes.AsSpan(bytes.Length - 32));File.WriteAllBytes(ledger, bytes);
             var pm = Path.Combine(Path.GetDirectoryName(parserIndex)!, "endfield-index-manifest.json");var prior = JsonSerializer.Deserialize<EndfieldIndexManifest>(File.ReadAllText(pm))!;File.WriteAllText(pm, JsonSerializer.Serialize(prior with { ParserIdentity = "changed-parser" }));
             parsed.Clear();Build(parserWorkspace);Check(parsed.Count == 40, "Changed parsing semantics must invalidate reuse");
+
+            // A portable full index must accept other paths/times with the same content.
+            var packed = Path.Combine(root, "public.effindex.gz");var publisher = EndfieldVfsArchive.Open(vfs);
+            EndfieldPortableIndex.Pack(publisher, parserWorkspace, packed, "fixture");
+            var otherVfs = Path.Combine(root, "other-machine-vfs");Directory.CreateDirectory(otherVfs);
+            foreach (var file in Directory.EnumerateFiles(vfs)) { var target = Path.Combine(otherVfs, Path.GetFileName(file));File.Copy(file, target);File.SetLastWriteTimeUtc(target, DateTime.UtcNow.AddHours(-12)); }
+            var other = EndfieldVfsArchive.Open(otherVfs);
+            Check(other.Fingerprint != publisher.Fingerprint && EndfieldPortableIndex.ContentIdentity(other) == EndfieldPortableIndex.ContentIdentity(publisher), "Public identity depends on local timestamps");
+            var importedWorkspace = Path.Combine(root, "public-import");var imported = EndfieldPortableIndex.Import(other, importedWorkspace, packed, CancellationToken.None);
+            Check(EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(other, importedWorkspace, out _), "Portable index not accepted by AnimeStudio");
+            Check(EndfieldIndexStore.Load(imported).StoredAssetCount == EndfieldIndexStore.Load(parserIndex).StoredAssetCount, "Portable asset records lost");
+            var accepted = File.ReadAllBytes(imported);var truncated = Path.Combine(root, "truncated.effindex.gz");File.WriteAllBytes(truncated, File.ReadAllBytes(packed).Take(30).ToArray());
+            Reject(() => EndfieldPortableIndex.Import(other, importedWorkspace, truncated, CancellationToken.None), "Truncated portable payload");
+            Check(accepted.SequenceEqual(File.ReadAllBytes(imported)), "Failed public import changed current index");
+            Block(otherVfs, 600, ("bundles/other.ab", 92));
+            Reject(() => EndfieldPortableIndex.Import(EndfieldVfsArchive.Open(otherVfs), importedWorkspace, packed, CancellationToken.None), "Different actual game content");
+            Console.WriteLine("PASS portable index: other machine/path/times, shared AnimeStudio acceptance, content mismatch and truncation rejection");
 
             // Resource changes during preparation reject commit and preserve last generation.
             before = File.ReadAllBytes(index);Block(vfs, 500, ("bundles/only.ab", 90));

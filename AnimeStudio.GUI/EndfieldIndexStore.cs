@@ -141,8 +141,13 @@ namespace AnimeStudio.GUI
                 !prefabContainer.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("A logical .prefab path is required.", nameof(prefabContainer));
 
-            var target = prefabContainer.Replace('\\', '/').Trim('/');
-            var prefabRecords = new List<VirtualAssetRecord>();
+            return LoadPrefabExportIndexes(path, new[] { prefabContainer })[prefabContainer.Replace('\\', '/').Trim('/')];
+        }
+
+        internal static Dictionary<string, EndfieldPrefabExportIndex> LoadPrefabExportIndexes(string path, IEnumerable<string> containers)
+        {
+            var targets = containers.Select(p => p.Replace('\\', '/').Trim('/')).Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(p => p, _ => new List<VirtualAssetRecord>(), StringComparer.OrdinalIgnoreCase);
             var dependencies = new EndfieldBundleDependencyIndex();
             string fingerprint;
 
@@ -169,9 +174,7 @@ namespace AnimeStudio.GUI
                     {
                         assetCount++;
                         var record = ReadAsset(reader);
-                        if (string.Equals(record.Container.Replace('\\', '/').Trim('/'), target,
-                                StringComparison.OrdinalIgnoreCase))
-                            prefabRecords.Add(record);
+                        if (targets.TryGetValue(record.Container.Replace('\\', '/').Trim('/'), out var records)) records.Add(record);
                         continue;
                     }
 
@@ -195,16 +198,15 @@ namespace AnimeStudio.GUI
                 if (!ended) throw new InvalidDataException("The Endfield index has no end record.");
             }
 
-            if (prefabRecords.Count == 0)
-                throw new FileNotFoundException($"Prefab is not present in the Endfield index: {target}");
-
-            var prefab = new VirtualAssetFile(target, prefabRecords);
-            var sources = prefabRecords.Select(record => record.Source).Where(source => !string.IsNullOrWhiteSpace(source))
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            if (sources.Length != 1)
-                throw new InvalidDataException("The selected Prefab has no unambiguous source Bundle: " + target);
-            var closureSources = dependencies.ResolveBundleClosure(sources[0])
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var closures = new Dictionary<string, (VirtualAssetFile Prefab, HashSet<string> Sources)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in targets)
+            {
+                if (pair.Value.Count == 0) throw new FileNotFoundException("Prefab is not present in the Endfield index: " + pair.Key);
+                var sources = pair.Value.Select(r => r.Source).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (sources.Length != 1) throw new InvalidDataException("Ambiguous Prefab source Bundle: " + pair.Key);
+                closures.Add(pair.Key, (new VirtualAssetFile(pair.Key, pair.Value), dependencies.ResolveBundleClosure(sources[0]).ToHashSet(StringComparer.OrdinalIgnoreCase)));
+            }
+            var closureSources = closures.Values.SelectMany(c => c.Sources).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var closureAssets = new List<VirtualAssetRecord>();
 
             using (var stream = OpenIndex(path))
@@ -245,7 +247,9 @@ namespace AnimeStudio.GUI
                 }
             }
 
-            return new EndfieldPrefabExportIndex(prefab, closureAssets, dependencies, fingerprint);
+            var bySource = closureAssets.ToLookup(r => r.Source, StringComparer.OrdinalIgnoreCase);
+            return closures.ToDictionary(c => c.Key, c => new EndfieldPrefabExportIndex(c.Value.Prefab,
+                c.Value.Sources.SelectMany(s => bySource[s]).ToArray(), dependencies, fingerprint), StringComparer.OrdinalIgnoreCase);
         }
 
         private static FileStream OpenIndex(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read,

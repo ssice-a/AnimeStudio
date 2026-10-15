@@ -47,6 +47,11 @@ jobs:
       - name: Build and package GUI and CLI
         shell: pwsh
         run: ./build.ps1
+      - name: Verify transactional source package updates
+        shell: pwsh
+        run: |
+          dotnet run --project AnimeStudio.UpdateTests/AnimeStudio.UpdateTests.csproj -c Release -p:TargetFrameworks=net9.0-windows
+          if ($LASTEXITCODE -ne 0) { throw 'Source update regression failed' }
       - name: Archive both supported frameworks
         shell: pwsh
         run: |
@@ -58,5 +63,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
+          draft: true
           files: AnimeStudio_${{ env.RELEASE_TAG }}_*.zip
           body_path: RELEASE_NOTES.md

@@ -1,22 +1,19 @@
-# AnimeStudio v1.5.0
+# AnimeStudio v1.6.0
 
-配套：[EFF v1.5.0](https://github.com/ssice-a/EFF/releases/tag/v1.5.0)、[EFF Blender v0.42.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.42.0)。
+配套：[EFF v1.7.0](https://github.com/ssice-a/EFF/releases/tag/v1.7.0)、[EFF Blender v0.44.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.44.0)。
 
-- 打开游戏目录、上一级 games 目录或已安装 VFS，自动合并 StreamingAssets 与 Persistent；按块版本和内容选择当前来源，缺少新载荷时不回退为不同内容的旧资源。
-- 游戏更新后按逐 Bundle 内容 MD5 和长度增量更新索引：只解析新增/变化的包，复用未变资产与 CAB 依赖，清理删除项。CHK 位置和范围变化但内容未变时继续复用。
-- 精确匹配当前资源的完整旧索引可直接迁移，不重新解析全部游戏包。索引格式保持，旁边增加单个 .eidx.bundles 文件；升级软件但解析规则未变时继续复用。
-- 加入失败重试、可校验的断点恢复与构建期间资源变化拒绝；进度显示 parsed/reused/removed。自动化入口：`AnimeStudio.GUI.exe --update-eff-index <game-or-VFS> <workspace>`。
+- 修复本次游戏更新后的 **BLC v5** 目录解析，保留 v3/v4。继续合并 StreamingAssets 与 Persistent，并按内容增量更新索引。
+- 重新打开当前游戏及原工作区时，自动更新工作区已有和已登记的 EFF 解包源包；菜单 **Export → Format specific → EFF → Update previously unpacked EFF resources...** 可指定其他旧输出目录。
+- EFF 源包先完整暂存、验证后提交，保留 `.eff-backups`；更新失败保留原包。按逻辑资源身份保留原文件名和段名，未知文件继续保留。
+- 与 Blender 共用来源锁，更新模板、清单和当前索引绑定。作者可从原 Blender 工程直接重新导出 Mod，不需要重新导入人物或使用 Mod 修复工具。
+- 新增完整公共索引打包/导入，核验 Bundle 实际内容后建立本地位置绑定；同内容的不同盘符与文件时间可共用。公共索引不包含游戏 Mesh/贴图，提取仍读取本机游戏资源。
 
-重新打开游戏目录，继续选择原工作区；请保留 index/。预下载 ZIP/差分不作为已安装资源，等待启动器正式安装后更新索引。源包、Blender 工程和游戏 Mod 不会因索引更新自动重新导出。
+关闭旧解包器后，选择与 Windows x64 .NET Desktop Runtime 对应的 net9.0-windows 或 net10.0-windows 附件安装，保留工作区 `index/`。预下载尚未正式安装时不作为当前资源。`.blend` 和已发布 Mod 不会被解包器自动保存或更新。
 
-增量与冷构建逐字节对照、删除/移动/失败/断点/损坏/解析语义失效回归通过。真实 8 包更新只解析 2 包、复用 6 包；既有完整 255842 包索引迁移的解析数为 0，原 eidx 摘要保持一致。更新仍有目录比较及紧凑索引 I/O，未来实际大版本更新耗时需观察。
-
-选择与 Windows x64 .NET Desktop Runtime 匹配的 net9.0-windows 或 net10.0-windows 附件。解包器、Blender 与游戏运行 DLL 独立安装；附件不含游戏资源。
+实际本次更新目录、完整公共索引打包导入、旧庄方宜 105 条资源文件/段名稳定、旧工程隔离导出，以及源包回退/并发和索引增量回归通过。资产删除、来源歧义或不兼容结构会报告具体失败，不猜测替代资产。
 
 ## English
 
-Open the installed game, its games parent or VFS folder to merge shipped and Persistent resource layers. Active block versions and content determine ownership; missing updated payloads never silently fall back to different old bytes. Predownload ZIPs/deltas are not installed resources.
+Fixes BLC v5 parsing for the current update and refreshes previously extracted EFF source packages when reopening their game/workspace. Packages are staged, validated and backed up before replacement; logical resource identities preserve existing filenames and section IDs. A dedicated menu refreshes other output folders.
 
-Index updates parse only new or changed Bundles, reuse unchanged asset/CAB records and remove deleted entries. Content-preserving CHK relocation reuses records. A complete legacy index at the exact current resource identity can be adopted without reparsing game Bundles. Keep the workspace index directory and its single .eidx.bundles sidecar.
-
-Incremental/cold byte equality and failure, resume, corruption and concurrent-update cases passed, including isolated real Bundles and migration of an existing 255842-Bundle index. Updates still compare metadata and read/write compact index records; future full game-update latency remains to be measured. Use the archive matching your Windows x64 .NET Desktop Runtime. No game assets are distributed.
+Paired Blender projects accept updated templates and index bindings without reimporting characters. Public full indexes include content proofs and can be rebound across installation paths/timestamps without parsing every Bundle. Extraction still reads local game resources. Existing blend files and distributed Mods are not automatically rewritten. Use the archive matching your Windows x64 .NET Desktop Runtime.
