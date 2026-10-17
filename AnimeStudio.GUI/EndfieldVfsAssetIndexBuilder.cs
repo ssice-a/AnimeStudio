@@ -36,13 +36,18 @@ namespace AnimeStudio.GUI
             Func<EndfieldVfsEntry, BinaryWriter, (long Assets, long Cabs)> parse = null)
         {
             BuildGate.Wait(token);
+            var previousTypes = TypeFlags.CaptureTypes();
+            var previousMinimal = AssetsHelper.Minimal;
             try
             {
+                // Persistent source indexes must not inherit GUI export filters.
+                TypeFlags.SetTypes(null);
+                AssetsHelper.Minimal = true;
                 var indexRoot = Path.Combine(Path.GetFullPath(workspace), "index");Directory.CreateDirectory(indexRoot);
                 using var workspaceLock = new FileStream(Path.Combine(indexRoot, "endfield-index.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
                 return BuildLocked(archive, workspace, game, progress, token, bundleLimit, parse);
             }
-            finally { BuildGate.Release(); }
+            finally { TypeFlags.SetTypes(previousTypes);AssetsHelper.Minimal = previousMinimal;BuildGate.Release(); }
         }
 
         private static string BuildLocked(EndfieldVfsArchive archive, string workspace, Game game,
@@ -79,6 +84,12 @@ namespace AnimeStudio.GUI
                 progress?.Report(new(bundles.Length, bundles.Length, m.AssetCount, m.CabCount, 0, "Current index reused", stopwatch.Elapsed, 0, bundles.Length));return indexPath;
             }
 
+            if (!bundleLimit.HasValue && TryRebindUnchangedContentLocked(archive, workspace, token))
+            {
+                var rebound = ReadManifest(workspace);
+                progress?.Report(new(bundles.Length, bundles.Length, rebound.AssetCount, rebound.CabCount, 0,
+                    "Logical Bundle content unchanged; current locations rebound", stopwatch.Elapsed, 0, bundles.Length));return indexPath;
+            }
             var old = EndfieldBundleIndexCache.TryLoad(indexPath);
             var manifest = ReadManifest(workspace);
             // Only an EXACT current pre-incremental baseline may be seeded from

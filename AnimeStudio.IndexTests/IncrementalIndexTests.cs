@@ -89,6 +89,52 @@ internal static class IncrementalIndexTests
             Build();Check(parsed.Count == 4 && progress.Last.ParsedBundles == 4, "Initial baseline must parse all Bundles");
             Check(EndfieldIndexStore.Load(index).StoredAssetCount == 3, "Initial compact index");
             var before = File.ReadAllBytes(index);parsed.Clear();Build();Check(parsed.Count == 0 && before.SequenceEqual(File.ReadAllBytes(index)), "Unchanged game must reuse index without rewriting");
+
+            // The repair tool shares this exact path, without a Unity parser.
+            // Same logical payloads moved to another CHK/range remain reusable.
+            var contentBefore = EndfieldPortableIndex.ContentIdentity(EndfieldVfsArchive.Open(vfs));
+            Block(vfs, 101, ("bundles/keep.ab", 1), ("bundles/change.ab", 2), ("bundles/delete.ab", 3), ("bundles/empty.ab", 238));
+            var relocated = EndfieldVfsArchive.Open(vfs);
+            Check(!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(relocated, workspace, out _) &&
+                contentBefore == EndfieldPortableIndex.ContentIdentity(relocated), "Relocation did not separate location and content identities");
+            Check(EndfieldVfsAssetIndexBuilder.TryRebindUnchangedContent(relocated, workspace, CancellationToken.None) &&
+                EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(relocated, workspace, out _), "Content-identical index could not rebind");
+            var relocatedCold = Build(Path.Combine(root, "relocated-cold"));
+            Check(File.ReadAllBytes(index).SequenceEqual(File.ReadAllBytes(relocatedCold)), "Rebound index differs from cold current index");parsed.Clear();
+            var retainedIndex = File.ReadAllBytes(index);
+            Block(vfs, 102, ("bundles/keep.ab", 1), ("bundles/change.ab", 7), ("bundles/delete.ab", 3), ("bundles/empty.ab", 238));
+            Check(!EndfieldVfsAssetIndexBuilder.TryRebindUnchangedContent(EndfieldVfsArchive.Open(vfs), workspace, CancellationToken.None) &&
+                retainedIndex.SequenceEqual(File.ReadAllBytes(index)), "Changed content was stamped onto old index records");
+            Block(vfs, 103, ("bundles/keep.ab", 1), ("bundles/change.ab", 2), ("bundles/delete.ab", 3), ("bundles/empty.ab", 238));
+            using (var canceled = new CancellationTokenSource())
+            {
+                canceled.Cancel();Reject(() => EndfieldVfsAssetIndexBuilder.TryRebindUnchangedContent(EndfieldVfsArchive.Open(vfs), workspace, canceled.Token), "Canceled rebind");
+                Check(retainedIndex.SequenceEqual(File.ReadAllBytes(index)), "Canceled rebind replaced the index");
+            }
+            Build();parsed.Clear();
+            Console.WriteLine("PASS logical index rebind shared by AnimeStudio/Repair: moved CHK/range, cold equality, changed-content rejection and cancellation");
+
+            // The GUI normally disables GameObject export. Its display/export
+            // preferences must never remove Prefab records from the shared index.
+            var savedFlags = Enum.GetValues<ClassIDType>().Distinct().ToDictionary(t => t, t => (t.CanParse(), t.CanExport()));
+            var savedMinimal = AssetsHelper.Minimal;
+            try
+            {
+                TypeFlags.SetTypes(new Dictionary<ClassIDType, (bool, bool)> { [ClassIDType.GameObject] = (false, false), [ClassIDType.Mesh] = (false, false) });
+                AssetsHelper.Minimal = false;
+                bool indexPolicyObserved = false;
+                Build(Path.Combine(root, "gui-filtered"), parser: (entry, writer) =>
+                {
+                    Check(ClassIDType.GameObject.CanParse() && ClassIDType.GameObject.CanExport() && ClassIDType.Mesh.CanExport() && AssetsHelper.Minimal,
+                        "GUI type preferences leaked into the persistent resource index");
+                    indexPolicyObserved = true;return Parse(entry, writer);
+                });
+                Check(indexPolicyObserved && !ClassIDType.GameObject.CanParse() && !ClassIDType.Mesh.CanExport() && !AssetsHelper.Minimal,
+                    "Index build did not restore GUI preferences");
+                Reject(() => Build(Path.Combine(root, "gui-filtered-failure"), parser: (_, _) => throw new IOException("Injected index failure")), "Filtered build failure");
+                Check(!ClassIDType.GameObject.CanParse() && !AssetsHelper.Minimal, "Failed index build changed GUI preferences");
+            }
+            finally { TypeFlags.SetTypes(savedFlags);AssetsHelper.Minimal = savedMinimal;parsed.Clear(); }
             Block(vfs, 200, ("bundles/keep.ab", 1), ("bundles/change.ab", 4), ("bundles/new.ab", 5), ("bundles/empty.ab", 238));
             Build();Check(parsed.Order().SequenceEqual(new[] { "bundles/change.ab", "bundles/new.ab" }), "Only new/changed Bundles parsed, despite new CHK and offsets");
             Check(progress.Last.ReusedBundles == 2 && progress.Last.RemovedBundles == 1, "Empty/unchanged reuse and deleted count");

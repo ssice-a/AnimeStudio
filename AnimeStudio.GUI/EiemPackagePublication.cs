@@ -51,7 +51,17 @@ internal static class EiemPackagePublication
             }
             File.WriteAllText(Path.Combine(staging, Receipt), JsonSerializer.Serialize(new { format = "EFF_GENERATED_FILES/1", files = generated }, new JsonSerializerOptions { WriteIndented = true }));
             bool moved = false;
-            if (Directory.Exists(package)) { Directory.CreateDirectory(Path.GetDirectoryName(backup)!);Directory.Move(package, backup);moved = true; }
+            if (Directory.Exists(package))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
+                try { Directory.Move(package, backup);moved = true; }
+                catch (Exception error) when (DirectoryMoveBlocked(error) && Directory.Exists(package) && !Directory.Exists(backup))
+                {
+                    // Windows directory watchers can block renaming an ancestor
+                    // while allowing atomic replacement of its individual files.
+                    PublishInPlace(package, staging, backup);return;
+                }
+            }
             try { Directory.Move(staging, package); }
             catch { if (moved) Directory.Move(backup, package);throw; }
         }
@@ -59,6 +69,68 @@ internal static class EiemPackagePublication
         {
             if (Directory.Exists(staging)) Directory.Delete(staging, true);
             gate.ReleaseMutex();
+        }
+    }
+
+    private static bool DirectoryMoveBlocked(Exception error) =>
+        (error is IOException or UnauthorizedAccessException) && (error.HResult & 0xffff) is 5 or 32 or 33;
+
+    private static void PublishInPlace(string package, string staging, string backup)
+    {
+        string Relative(string root, string file) => Path.GetRelativePath(root, file).Replace('\\', '/');
+        var previous = Files(package).ToDictionary(p => Relative(package, p), StringComparer.OrdinalIgnoreCase);
+        var incoming = Files(staging).ToDictionary(p => Relative(staging, p), StringComparer.OrdinalIgnoreCase);
+        Directory.CreateDirectory(backup);
+        // The shared source mutex stays held throughout backup, commit and rollback.
+        foreach (var row in previous)
+        {
+            var target = Path.Combine(backup, row.Key);Directory.CreateDirectory(Path.GetDirectoryName(target)!);File.Copy(row.Value, target);
+        }
+        bool Same(string left, string right)
+        {
+            if (new FileInfo(left).Length != new FileInfo(right).Length) return false;
+            using var a = File.OpenRead(left);using var b = File.OpenRead(right);
+            return SHA256.HashData(a).SequenceEqual(SHA256.HashData(b));
+        }
+        int Order(string name) => name.ToLowerInvariant() switch
+        {
+            "mod.ini" => 1,
+            Receipt => 2,
+            "source/manifest.json" => 3,
+            _ => 0
+        };
+        var changed = new List<string>();
+        try
+        {
+            foreach (var name in previous.Keys.Union(incoming.Keys, StringComparer.OrdinalIgnoreCase).OrderBy(Order).ThenBy(p => p, StringComparer.OrdinalIgnoreCase))
+            {
+                var target = Path.Combine(package, name);
+                if (incoming.TryGetValue(name, out var source))
+                {
+                    if (previous.ContainsKey(name) && Same(Path.Combine(backup, name), source)) continue;
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);File.Move(source, target, true);
+                }
+                else File.Delete(target);
+                changed.Add(name);
+            }
+        }
+        catch (Exception failure)
+        {
+            try
+            {
+                foreach (var name in changed.AsEnumerable().Reverse())
+                {
+                    var target = Path.Combine(package, name);
+                    if (previous.ContainsKey(name))
+                    {
+                        var restored = Path.Combine(staging, ".rollback-" + Guid.NewGuid().ToString("N"));
+                        File.Copy(Path.Combine(backup, name), restored);File.Move(restored, target, true);
+                    }
+                    else File.Delete(target);
+                }
+            }
+            catch (Exception rollback) { throw new AggregateException("Source update and rollback failed; complete previous package is backed up at " + backup, failure, rollback); }
+            throw new IOException("Source files could not be replaced; previous contents restored. Backup: " + backup, failure);
         }
     }
 

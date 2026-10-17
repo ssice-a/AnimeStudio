@@ -32,6 +32,38 @@ try
         finally { gate.ReleaseMutex(); }
     }
     Console.WriteLine("PASS source publication: failure rollback, generated retirement, unknown file preservation, backup");
+    var watched = Path.Combine(root, "watched.eff");
+    EiemPackagePublication.Publish(watched, p => Generate(p, "first.mesh", "first"));
+    File.WriteAllText(Path.Combine(watched, "notes.txt"), "keep notes");
+    using (var watcher = DirectoryWatchHandle.Open(Path.Combine(watched, "meshes")))
+    {
+        EiemPackagePublication.Publish(watched, p => Generate(p, "second.mesh", "second"));
+        Check(File.ReadAllText(Path.Combine(watched, "meshes", "second.mesh")) == "second" && !File.Exists(Path.Combine(watched, "meshes", "first.mesh")),
+            "Directory watcher prevented source update or retirement");
+        Check(File.ReadAllText(Path.Combine(watched, "notes.txt")) == "keep notes", "Watched update lost unknown author file");
+    }
+    var rollback = Path.Combine(root, "watched-rollback.eff");
+    void Pair(string target, string value) { Generate(target, "a.mesh", value);File.WriteAllText(Path.Combine(target, "meshes", "z.mesh"), value); }
+    EiemPackagePublication.Publish(rollback, p => Pair(p, "old"));
+    using (var watcher = DirectoryWatchHandle.Open(Path.Combine(rollback, "meshes")))
+    using (var locked = new FileStream(Path.Combine(rollback, "meshes", "z.mesh"), FileMode.Open, FileAccess.Read, FileShare.Read))
+    {
+        try { EiemPackagePublication.Publish(rollback, p => Pair(p, "new"));throw new Exception("Locked source file should reject replacement"); }
+        catch (IOException) { }
+        Check(File.ReadAllText(Path.Combine(rollback, "meshes", "a.mesh")) == "old" && File.ReadAllText(Path.Combine(rollback, "meshes", "z.mesh")) == "old",
+            "Failed watched update did not roll back earlier files");
+    }
+    Console.WriteLine("PASS watched-directory source update, unknown preservation, retirement and locked-file rollback");
+    var standalone = Path.Combine(root, "material.eff");Directory.CreateDirectory(Path.Combine(standalone, "source"));
+    var standaloneManifest = "{\"format\":\"EFFSOURCE\",\"purpose\":\"material-author-source\",\"resources\":[]}";
+    File.WriteAllText(Path.Combine(standalone, "source", "manifest.json"), standaloneManifest);
+    Directory.CreateDirectory(Path.Combine(root, "unused-workspace"));
+    var messages = new List<string>();
+    Check(EndfieldSourceRefresh.Refresh(null!, Path.Combine(root, "unused-workspace"), new InlineProgress(messages.Add), CancellationToken.None, standalone) == 0,
+        "Standalone source without a Prefab anchor should be skipped");
+    Check(messages.Any(m => m.Contains("without a Prefab anchor")) && File.ReadAllText(Path.Combine(standalone, "source", "manifest.json")) == standaloneManifest,
+        "Standalone material source was modified or skipped silently");
+    Console.WriteLine("PASS standalone material source skip without missing-key exception");
     if (args.Length == 3 && args[0] == "--portable-real")
     {
         var archive = EndfieldVfsArchive.Open(args[1]);var workspace = args[2];var payload = Path.Combine(root, "game.effindex.gz");
@@ -45,3 +77,19 @@ try
 }
 catch (Exception error) { Console.Error.WriteLine(error);return 1; }
 finally { Directory.Delete(root, true); }
+
+sealed class InlineProgress(Action<string> report) : IProgress<string>
+{
+    public void Report(string value) => report(value);
+}
+
+static class DirectoryWatchHandle
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint mode, uint flags, IntPtr template);
+    internal static Microsoft.Win32.SafeHandles.SafeFileHandle Open(string path)
+    {
+        var handle = CreateFile(path, 1, 3, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception();return handle;
+    }
+}

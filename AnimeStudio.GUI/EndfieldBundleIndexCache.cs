@@ -16,7 +16,7 @@ namespace AnimeStudio.GUI
     internal sealed class EndfieldBundleIndexCache
     {
         // Bump only when Bundle parsing/record semantics change, not on releases.
-        public const string ParserIdentity = "endfield-bundle/asset+container+type+pathid+source+cab-dependencies/1";
+        public const string ParserIdentity = "endfield-bundle/asset+container+type+pathid+source+cab-dependencies/2";
         private const string Magic = "EFF_BUNDLE_INDEX_SPANS/1";
         public string Fingerprint { get; init; }
         public long IndexLength { get; init; }

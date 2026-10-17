@@ -29,7 +29,7 @@ namespace AnimeStudio.GUI
                 var prefabPath = args[3].Replace('\\', '/').Trim('/');
                 outputRoot = Path.GetFullPath(args[4]);
                 var archive = EndfieldVfsArchive.Open(vfsRoot);
-                if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out var indexPath))
+                if (!EndfieldVfsAssetIndexBuilder.TryGetOrRebindCurrentIndex(archive, workspace, out var indexPath))
                     throw new InvalidDataException("No current Endfield index exists for this VFS and workspace.");
 
                 var packageDirectory = Path.Combine(outputRoot,
@@ -52,7 +52,7 @@ namespace AnimeStudio.GUI
         internal static void ExportOne(EndfieldVfsArchive archive, string workspace, string prefabPath,
             string packageDirectory, string unityVersion = null, EndfieldPrefabExportIndex preparedIndex = null)
         {
-            if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out var indexPath))
+            if (!EndfieldVfsAssetIndexBuilder.TryGetOrRebindCurrentIndex(archive, workspace, out var indexPath))
                 throw new InvalidDataException("No current Endfield source index; update the workspace first");
             var flags = Enum.GetValues<ClassIDType>().Distinct().ToDictionary(t => t, t => (t.CanParse(), t.CanExport()));
             try

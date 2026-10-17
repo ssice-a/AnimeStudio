@@ -41,7 +41,7 @@ internal static class EndfieldSourceRefresh
     {
         var packages = outputRoot == null ? Registered(workspace) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var package in Discover(outputRoot ?? Path.Combine(workspace, "assets"))) packages.Add(package);
-        int updated = 0;var failures = new List<string>();
+        int updated = 0;var failures = new List<string>();var skipped = new List<string>();
         var pending = new List<(string Package, string Prefab)>();
         foreach (var package in packages.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
         {
@@ -52,8 +52,12 @@ internal static class EndfieldSourceRefresh
             {
                 using var json = JsonDocument.Parse(File.ReadAllText(manifest));var root = json.RootElement;
                 if (root.GetProperty("format").GetString() != "EFFSOURCE") continue;
-                var prefab = root.GetProperty("prefab").GetString();
-                if (string.IsNullOrWhiteSpace(prefab)) { progress?.Report("Skipped source without a Prefab anchor: " + package);continue; }
+                var prefab = root.TryGetProperty("prefab", out var anchor) && anchor.ValueKind == JsonValueKind.String ? anchor.GetString() : null;
+                if (string.IsNullOrWhiteSpace(prefab))
+                {
+                    var message = "Skipped source without a Prefab anchor (retained unchanged): " + package;
+                    skipped.Add(message);progress?.Report(message);continue;
+                }
                 var currentIndex = EndfieldVfsAssetIndexBuilder.GetIndexPath(workspace);
                 if (outputRoot == null && root.GetProperty("vfsFingerprint").GetString() == archive.Fingerprint &&
                     root.TryGetProperty("sourceIndex", out var index) && index.GetString() == currentIndex) continue;
@@ -61,7 +65,7 @@ internal static class EndfieldSourceRefresh
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                failures.Add(package + ": " + error.Message);progress?.Report("Source retained after failed update: " + failures.Last());
+                failures.Add(package + ": " + error);progress?.Report("Source retained after failed update: " + package + ": " + error.Message);
             }
         }
         Dictionary<string, EndfieldPrefabExportIndex> prepared = null;
@@ -81,12 +85,15 @@ internal static class EndfieldSourceRefresh
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
-                failures.Add(item.Package + ": " + error.Message);progress?.Report("Source retained after failed update: " + failures.Last());
+                failures.Add(item.Package + ": " + error);progress?.Report("Source retained after failed update: " + item.Package + ": " + error.Message);
             }
         }
+        Directory.CreateDirectory(workspace);
+        var skippedLog = Path.Combine(workspace, "source-update-skipped.log");
+        if (skipped.Count > 0) File.WriteAllLines(skippedLog, skipped);else if (File.Exists(skippedLog)) File.Delete(skippedLog);
         var log = Path.Combine(workspace, "source-update-errors.log");
         if (failures.Count > 0) File.WriteAllLines(log, failures);else if (File.Exists(log)) File.Delete(log);
-        progress?.Report($"Source update finished: {updated} updated, {failures.Count} failed (previous packages retained)");
+        progress?.Report($"Source update finished: {updated} updated, {skipped.Count} skipped without a Prefab anchor, {failures.Count} failed (previous packages retained)");
         if (failures.Count > 0) throw new IOException("Some unpacked sources could not be updated; previous packages retained. See " + log);
         return updated;
     }

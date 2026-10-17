@@ -6,6 +6,9 @@ public static class TypeFlags
 {
     private static Dictionary<ClassIDType, (bool, bool)> Types;
 
+    public static Dictionary<ClassIDType, (bool, bool)> CaptureTypes() =>
+        Types == null ? null : new Dictionary<ClassIDType, (bool, bool)>(Types);
+
     public static void SetTypes(Dictionary<ClassIDType, (bool, bool)> types)
     {
         Types = types;
