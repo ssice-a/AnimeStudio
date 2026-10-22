@@ -12,6 +12,11 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<InternalsVisibleTo Include="AnimeStudio.PreviewTests" />
+		<InternalsVisibleTo Include="AnimeStudio.EffectsTests" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\AnimeStudio.Utility\AnimeStudio.Utility.csproj" />
 		<ProjectReference Include="..\AnimeStudio\AnimeStudio.csproj" />
 	</ItemGroup>

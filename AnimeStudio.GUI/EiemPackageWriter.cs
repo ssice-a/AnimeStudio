@@ -21,6 +21,7 @@ namespace AnimeStudio.GUI
         private readonly EndfieldBundleDependencyIndex dependencies;
         private readonly string vfsFingerprint;
         private readonly string sourceIndex;
+        private readonly EndfieldVfsArchive sourceArchive;
         private readonly Dictionary<string, List<VirtualAssetRecord>> assetsByIdentity =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Mesh, string> meshes = new();
@@ -45,11 +46,13 @@ namespace AnimeStudio.GUI
         private HashSet<Transform> skeletonTransforms;
 
         public EiemPackageWriter(IReadOnlyList<VirtualAssetRecord> records,
-            EndfieldBundleDependencyIndex dependencies, string vfsFingerprint, string sourceIndex = null)
+            EndfieldBundleDependencyIndex dependencies, string vfsFingerprint, string sourceIndex = null,
+            EndfieldVfsArchive sourceArchive = null)
         {
             this.dependencies = dependencies;
             this.vfsFingerprint = vfsFingerprint;
             this.sourceIndex = sourceIndex;
+            this.sourceArchive = sourceArchive;
             foreach (var record in records ?? Array.Empty<VirtualAssetRecord>())
             {
                 var key = AssetKey(record.Type, record.PathId);
@@ -184,7 +187,7 @@ namespace AnimeStudio.GUI
                 try
                 {
                     EiemSourceManifestWriter.Write(rootDirectory, prefab, root, dependencies,
-                        vfsFingerprint, sourceResources, sourceIndex);
+                        vfsFingerprint, sourceResources, sourceIndex, sourceArchive);
                 }
                 catch (Exception ex)
                 {
@@ -378,6 +381,12 @@ namespace AnimeStudio.GUI
 
         private void WriteMesh(string path, Mesh mesh, string source, IReadOnlyList<string> bonePaths)
         {
+            WriteMeshPayload(path, mesh, source, bonePaths);
+            binaryFiles.Add(path);
+        }
+
+        internal static void WriteMeshPayload(string path, Mesh mesh, string source, IReadOnlyList<string> bonePaths)
+        {
             using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
             using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false);
             writer.Write(Encoding.ASCII.GetBytes("EFFMESH\0"));
@@ -452,7 +461,6 @@ namespace AnimeStudio.GUI
                 writer.Write((uint)slot);
             }
             WriteBlendShapes(writer, mesh.m_Shapes);
-            binaryFiles.Add(path);
         }
 
         private void WriteSkeleton(string path)

@@ -200,14 +200,16 @@ namespace AnimeStudio
                 }
             }
 
-            if (reader.Game.Type.IsNaraka())
-            {
-                var value = reader.ReadInt32();
-            }
-
             if (version[0] > 5 || (version[0] == 5 && version[1] >= 6)) //5.6 and up
             {
                 var disabledShaderPasses = reader.ReadStringArray();
+            }
+
+            if (reader.Game.Type.IsNaraka())
+            {
+                // Naraka stores a second string array after disabledShaderPasses.
+                // Skipping only the first array's count corrupts non-empty lists.
+                var disabledShaderPassNames = reader.ReadStringArray();
             }
 
             if (reader.Game.Type.IsZZZ() && HasEnabledPassMask(reader.serializedType))

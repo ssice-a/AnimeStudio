@@ -103,7 +103,8 @@ namespace AnimeStudio.GUI
                     throw new InvalidDataException($"Prefab root '{exportIndex.Prefab.Stem}' was not found in its dependency closure.");
 
                 archive.VerifyCurrent();
-                new EiemPackageWriter(exportIndex.Assets, exportIndex.Dependencies, exportIndex.VfsFingerprint, indexPath)
+                new EiemPackageWriter(exportIndex.Assets, exportIndex.Dependencies,
+                    exportIndex.VfsFingerprint, indexPath, archive)
                     .Write(exportIndex.Prefab, root, packageDirectory, archive.VerifyCurrent);
                 archive.VerifyCurrent();
                 }

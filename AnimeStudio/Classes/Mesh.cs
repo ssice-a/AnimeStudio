@@ -34,6 +34,14 @@ namespace AnimeStudio
         public PackedIntVector m_Triangles;
         public PackedIntVector m_Colors;
         public uint m_UVInfo;
+        public PackedFloatVector m_VerticesY;
+        public PackedFloatVector m_VerticesZ;
+        public PackedFloatVector m_LightmapUV;
+
+        private static bool HasNarakaSplitVertexData(SerializedType type) =>
+            type.m_Type?.m_Nodes is { Count: > 0 } nodes
+                ? nodes.Any(node => node.m_Level == 2 && node.m_Name == "m_VerticesY")
+                : type.Match("6E586577362A6D19119377919A6D1962");
 
         public CompressedMesh(ObjectReader reader)
         {
@@ -66,6 +74,15 @@ namespace AnimeStudio
                 {
                     m_UVInfo = reader.ReadUInt32();
                 }
+            }
+
+            if (reader.Game.Type.IsNaraka() && HasNarakaSplitVertexData(reader.serializedType))
+            {
+                // These packed vectors precede bounds and the resS reference, even
+                // when their payloads are empty. Keep older Naraka layouts intact.
+                m_VerticesY = new PackedFloatVector(reader);
+                m_VerticesZ = new PackedFloatVector(reader);
+                m_LightmapUV = new PackedFloatVector(reader);
             }
         }
     }
@@ -483,6 +500,8 @@ namespace AnimeStudio
         public uint vertexCount;
         public AABB localAABB;
 
+        public SubMesh() { }
+
         public SubMesh(ObjectReader reader)
         {
             var version = reader.version;
@@ -541,6 +560,9 @@ namespace AnimeStudio
         public static bool HasVertexColorSkinning(SerializedType type) => type.Match("413A501B79022BF2DF389A82002FC81F");
 
         public List<uint> m_Indices = new List<uint>();
+
+        /// <summary>A decoded mesh view of a custom source asset; does not add or replace a native object.</summary>
+        public Mesh(Object source, string name) : base(source, name) { }
 
         public Mesh(ObjectReader reader) : base(reader)
         {
@@ -1062,11 +1084,33 @@ namespace AnimeStudio
 
         private void DecompressCompressedMesh()
         {
+            var narakaSplitVertices = reader.Game.Type.IsNaraka() &&
+                                      m_CompressedMesh.m_VerticesY?.m_NumItems > 0;
             //Vertex
             if (m_CompressedMesh.m_Vertices.m_NumItems > 0)
             {
-                m_VertexCount = (int)m_CompressedMesh.m_Vertices.m_NumItems / 3;
-                m_Vertices = m_CompressedMesh.m_Vertices.UnpackFloats(3, 3 * 4);
+                if (narakaSplitVertices)
+                {
+                    m_VertexCount = checked((int)m_CompressedMesh.m_Vertices.m_NumItems);
+                    if (m_CompressedMesh.m_VerticesY.m_NumItems != m_VertexCount ||
+                        m_CompressedMesh.m_VerticesZ.m_NumItems != m_VertexCount)
+                        throw new InvalidDataException("Naraka compressed XYZ counts do not match");
+                    var x = m_CompressedMesh.m_Vertices.UnpackFloats(1, 4);
+                    var y = m_CompressedMesh.m_VerticesY.UnpackFloats(1, 4);
+                    var z = m_CompressedMesh.m_VerticesZ.UnpackFloats(1, 4);
+                    m_Vertices = new float[checked(m_VertexCount * 3)];
+                    for (var i = 0; i < m_VertexCount; i++)
+                    {
+                        m_Vertices[i * 3] = x[i];
+                        m_Vertices[i * 3 + 1] = y[i];
+                        m_Vertices[i * 3 + 2] = z[i];
+                    }
+                }
+                else
+                {
+                    m_VertexCount = (int)m_CompressedMesh.m_Vertices.m_NumItems / 3;
+                    m_Vertices = m_CompressedMesh.m_Vertices.UnpackFloats(3, 3 * 4);
+                }
             }
             //UV
             if (m_CompressedMesh.m_UV.m_NumItems > 0)
@@ -1102,6 +1146,9 @@ namespace AnimeStudio
                     }
                 }
             }
+            if (narakaSplitVertices && m_CompressedMesh.m_LightmapUV.m_NumItems > 0)
+                m_UV1 = m_CompressedMesh.m_LightmapUV.UnpackFloats(2, 8, 0, m_VertexCount);
+
             //BindPose
             if (version[0] < 5)
             {
@@ -1127,6 +1174,14 @@ namespace AnimeStudio
                 {
                     var x = normalData[i * 2 + 0];
                     var y = normalData[i * 2 + 1];
+                    if (narakaSplitVertices)
+                    {
+                        var normal = DecodeOctahedral(x, y);
+                        m_Normals[i * 3] = normal.X;
+                        m_Normals[i * 3 + 1] = normal.Y;
+                        m_Normals[i * 3 + 2] = normal.Z;
+                        continue;
+                    }
                     var zsqr = 1 - x * x - y * y;
                     float z;
                     if (zsqr >= 0f)
@@ -1157,6 +1212,15 @@ namespace AnimeStudio
                 {
                     var x = tangentData[i * 2 + 0];
                     var y = tangentData[i * 2 + 1];
+                    if (narakaSplitVertices)
+                    {
+                        var tangent = DecodeOctahedral(x, y);
+                        m_Tangents[i * 4] = tangent.X;
+                        m_Tangents[i * 4 + 1] = tangent.Y;
+                        m_Tangents[i * 4 + 2] = tangent.Z;
+                        m_Tangents[i * 4 + 3] = signs[i] > 0 ? 1.0f : -1.0f;
+                        continue;
+                    }
                     var zsqr = 1 - x * x - y * y;
                     float z;
                     if (zsqr >= 0f)
@@ -1249,6 +1313,20 @@ namespace AnimeStudio
                     m_Colors[v] = tempColors[v] / 255f;
                 }
             }
+        }
+
+        private static Vector3 DecodeOctahedral(float x, float y)
+        {
+            var z = 1.0f - Math.Abs(x) - Math.Abs(y);
+            if (z < 0)
+            {
+                var oldX = x;
+                x = (1.0f - Math.Abs(y)) * (oldX >= 0 ? 1.0f : -1.0f);
+                y = (1.0f - Math.Abs(oldX)) * (y >= 0 ? 1.0f : -1.0f);
+            }
+            var result = new Vector3(x, y, z);
+            result.Normalize();
+            return result;
         }
 
         private void GetTriangles()

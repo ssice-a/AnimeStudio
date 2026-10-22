@@ -29,6 +29,15 @@ namespace AnimeStudio
 
         public virtual string Name => string.Empty;
 
+        // A decoded geometry view can retain its actual source object's
+        // identity/reader without reparsing it as a native Unity Mesh.
+        protected Object(Object source)
+        {
+            reader = source.reader; assetsFile = source.assetsFile; type = source.type;
+            m_PathID = source.m_PathID; version = source.version; buildType = source.buildType;
+            platform = source.platform; serializedType = source.serializedType; byteSize = source.byteSize;
+        }
+
         public Object(ObjectReader reader)
         {
             this.reader = reader;

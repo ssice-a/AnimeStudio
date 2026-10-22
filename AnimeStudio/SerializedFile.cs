@@ -29,6 +29,11 @@ namespace AnimeStudio
         public List<SerializedType> m_Types;
         public int bigIDEnabled = 0;
         public List<ObjectInfo> m_Objects;
+        // Exact table extent for author-side rewrites; ordinary reading is unchanged.
+        public long ObjectTableStart { get; private set; }
+        public long ObjectCountOffset { get; private set; }
+        public long ObjectTableEnd { get; private set; }
+        public List<(long Offset, string Path)> ExternalPathSites { get; } = new();
         private List<LocalSerializedObjectIdentifier> m_ScriptTypes;
         public List<FileIdentifier> m_Externals;
         public List<SerializedType> m_RefTypes;
@@ -119,7 +124,9 @@ namespace AnimeStudio
             }
 
             // Read Objects
+            ObjectCountOffset = reader.Position;
             int objectCount = reader.ReadInt32();
+            ObjectTableStart = (reader.Position + 3) & ~3L;
             m_Objects = new List<ObjectInfo>();
             Objects = new List<Object>();
             ObjectsDic = new Dictionary<long, Object>();
@@ -178,6 +185,7 @@ namespace AnimeStudio
                 m_Objects.Add(objectInfo);
             }
 
+            ObjectTableEnd = reader.Position;
             if (header.m_Version >= SerializedFileFormatVersion.HasScriptTypeIndex)
             {
                 int scriptCount = reader.ReadInt32();
@@ -216,7 +224,9 @@ namespace AnimeStudio
                     m_External.guid = new Guid(reader.ReadBytes(16));
                     m_External.type = reader.ReadInt32();
                 }
+                long pathPosition = reader.Position;
                 m_External.pathName = reader.ReadStringToNull();
+                ExternalPathSites.Add((pathPosition, m_External.pathName));
                 m_External.fileName = Path.GetFileName(m_External.pathName);
                 Logger.Verbose($"External Info: {m_External}");
                 m_Externals.Add(m_External);

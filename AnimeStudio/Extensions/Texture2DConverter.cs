@@ -26,6 +26,14 @@ namespace AnimeStudio
             outPutSize = m_Width * m_Height * 4;
         }
 
+        // Decode a validated array slice through the same format decoder as 2D textures.
+        public Texture2DConverter(ResourceReader data, int width, int height, TextureFormat format, int[] sourceVersion, BuildTarget sourcePlatform)
+        {
+            reader = data; m_Width = width; m_Height = height; m_TextureFormat = format;
+            version = sourceVersion; platform = sourcePlatform;
+            outPutSize = checked(width * height * 4);
+        }
+
         public bool DecodeTexture2D(byte[] bytes)
         {
             if (reader.Size == 0 || m_Width == 0 || m_Height == 0)

@@ -282,6 +282,8 @@ namespace AnimeStudio
             float scale = 1.0f / m_Range;
             if (numChunks == -1)
                 numChunks = (int)m_NumItems / itemCountInChunk;
+            if (m_BitSize == 0)
+                return Enumerable.Repeat(m_Start, checked(numChunks * itemCountInChunk)).ToArray();
             var end = chunkStride * numChunks / 4;
             var data = new List<float>();
             for (var index = 0; index != end; index += chunkStride / 4)

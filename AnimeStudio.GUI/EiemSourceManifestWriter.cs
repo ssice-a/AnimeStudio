@@ -25,14 +25,23 @@ namespace AnimeStudio.GUI
 
         public static void Write(string package, VirtualAssetFile prefab, GameObject root,
             EndfieldBundleDependencyIndex dependencies, string vfsFingerprint,
-            IReadOnlyList<AuthorResource> resources, string sourceIndex = null)
+            IReadOnlyList<AuthorResource> resources, string sourceIndex = null,
+            EndfieldVfsArchive sourceArchive = null)
         {
             if (dependencies == null || string.IsNullOrWhiteSpace(vfsFingerprint))
                 throw new InvalidDataException("Source baseline requires the current VFS and dependency index.");
+            if (sourceArchive != null && !string.Equals(sourceArchive.Fingerprint, vfsFingerprint, StringComparison.Ordinal))
+                throw new InvalidDataException("Source bundle stamps do not match the VFS fingerprint.");
             var source = dependencies.GetBundleSource(root.assetsFile.fileName);
             if (string.IsNullOrWhiteSpace(source))
                 throw new InvalidDataException("The exact Prefab root CAB has no source Bundle identity.");
             var closure = dependencies.ResolveBundleClosure(source);
+            var bundleInputs = sourceArchive == null ? null : closure.Select(path =>
+            {
+                if (!sourceArchive.TryGet(path, out var entry))
+                    throw new InvalidDataException("Source Bundle is absent from the current VFS: " + path);
+                return new { path, fileDataMd5 = entry.FileDataMd5, length = entry.Length };
+            }).ToArray();
             var cabs = closure.SelectMany(dependencies.GetCabNames).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var manager = root.assetsFile.assetsManager;
             var files = manager.assetsFileList.Where(file => cabs.Contains(file.fileName))
@@ -184,7 +193,7 @@ namespace AnimeStudio.GUI
                 format = "EFFSOURCE", version = 1, purpose = "author-source-baseline",
                 nativePack = false, runtimeNativeMemory = false, vfsFingerprint, sourceIndex,
                 prefab = prefab.Container.Replace('\\', '/'), root = Identity(root), sourceBundle = source,
-                containerEntries = entries, closure,
+                containerEntries = entries, closure, bundleInputs,
                 resources = resources.Select(r => new { identity = Identity(r.Asset),
                     type = r.Asset.type.ToString(), name = r.Asset.Name, logicalPath = r.LogicalPath,
                     sourceBundle = dependencies.GetBundleSource(r.Asset.assetsFile.fileName),

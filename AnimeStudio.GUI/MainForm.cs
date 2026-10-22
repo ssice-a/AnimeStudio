@@ -103,8 +103,91 @@ namespace AnimeStudio.GUI
             InitalizeOptions();
             FMODinit();
             InitializeEndfieldVirtualPathFilter();
+            InitializeNarakaPreviewOptions();
             sceneTreeView.BeforeExpand += sceneTreeView_BeforeExpand;
             sceneTreeView.AfterSelect += sceneTreeView_AfterSelect;
+            FormClosing += MainForm_FormClosing;
+        }
+
+        private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            endfieldSourceRefreshCancellation.Cancel();
+            endfieldIndexCancellation.Cancel();
+            endfieldPreviewCancellation.Cancel();
+        }
+
+        private CancellationTokenSource ReplaceEndfieldSourceRefreshCancellation()
+        {
+            var previous = endfieldSourceRefreshCancellation;
+            previous.Cancel();
+            if (endfieldSourceRefreshTask.IsCompleted)
+                previous.Dispose();
+            endfieldSourceRefreshCancellation = new CancellationTokenSource();
+            return endfieldSourceRefreshCancellation;
+        }
+
+        private void FinishEndfieldSourceRefresh(CancellationTokenSource source)
+        {
+            if (ReferenceEquals(endfieldSourceRefreshCancellation, source))
+                endfieldSourceRefreshCancellation = new CancellationTokenSource();
+            source.Dispose();
+        }
+
+        private void StartEndfieldSourceRefresh(EndfieldVfsArchive archive,
+            string workspace, string unityVersion,
+            EndfieldBundleDependencyIndex dependencies = null,
+            string outputRoot = null)
+        {
+            var cancellation = ReplaceEndfieldSourceRefreshCancellation();
+            var generation = Interlocked.Increment(ref endfieldSourceRefreshGeneration);
+            bool IsCurrent() => generation == Volatile.Read(ref endfieldSourceRefreshGeneration) &&
+                !IsDisposed && !Disposing;
+            var progress = new Progress<string>(message =>
+            {
+                if (IsCurrent()) StatusStripUpdate("EFF source update: " + message);
+            });
+            var previousTask = endfieldSourceRefreshTask;
+            var worker = Task.Run(async () =>
+            {
+                try { await previousTask.ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                cancellation.Token.ThrowIfCancellationRequested();
+                var thread = Thread.CurrentThread;
+                var priority = thread.Priority;
+                try
+                {
+                    thread.Priority = ThreadPriority.BelowNormal;
+                    return EndfieldSourceRefresh.Refresh(archive, workspace, progress,
+                        cancellation.Token, outputRoot: outputRoot,
+                        unityVersion: unityVersion,
+                        packageLock: endfieldPreviewLock,
+                        dependencies: dependencies);
+                }
+                finally { thread.Priority = priority; }
+            });
+            endfieldSourceRefreshTask = ObserveEndfieldSourceRefreshAsync(
+                worker, cancellation, generation);
+        }
+
+        private async Task ObserveEndfieldSourceRefreshAsync(Task<int> worker,
+            CancellationTokenSource cancellation, int generation)
+        {
+            try
+            {
+                var updated = await worker;
+                if (updated > 0 && generation == Volatile.Read(ref endfieldSourceRefreshGeneration) &&
+                    !IsDisposed && !Disposing)
+                    StatusStripUpdate($"EFF source update complete: {updated} package(s) refreshed.");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception error)
+            {
+                Logger.Error("Background EFF source update failed: " + error);
+                if (generation == Volatile.Read(ref endfieldSourceRefreshGeneration) &&
+                    !IsDisposed && !Disposing)
+                    StatusStripUpdate("Some EFF source packages failed to update. See workspace log.");
+            }
+            finally { FinishEndfieldSourceRefresh(cancellation); }
         }
 
         private ToolStripMenuItem endfieldVirtualPathsToolStripMenuItem;
@@ -119,6 +202,9 @@ namespace AnimeStudio.GUI
         private readonly SemaphoreSlim endfieldPreviewLock = new(1, 1);
         private CancellationTokenSource endfieldPreviewCancellation = new();
         private CancellationTokenSource endfieldIndexCancellation = new();
+        private CancellationTokenSource endfieldSourceRefreshCancellation = new();
+        private Task endfieldSourceRefreshTask = Task.CompletedTask;
+        private int endfieldSourceRefreshGeneration;
         private int endfieldListOperationGeneration;
         private bool endfieldVirtualAssetListMode;
         private bool indexedFileSourceMode;
@@ -168,7 +254,16 @@ namespace AnimeStudio.GUI
                 async (_, _) => await RefreshUnpackedEndfieldSourcesAsync());
             eiemMenu.DropDownItems.Add("Checked facial animations as EFF library...", null,
                 async (_, _) => await ExportCheckedEndfieldAnimationsAsync());
+            eiemMenu.DropDownItems.Add("Checked Prefabs as EFF effect sources...", null,
+                async (_, _) => await ExportCheckedEndfieldEffectsAsync());
             formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
+
+            var narakaMenu = new ToolStripMenuItem("Naraka / 永劫无间");
+            narakaMenu.DropDownItems.Add("Selected Prefabs as Blender packages...", null,
+                async (_, _) => await ExportNarakaPrefabsAsync(false));
+            narakaMenu.DropDownItems.Add("Checked Prefabs as Blender packages...", null,
+                async (_, _) => await ExportNarakaPrefabsAsync(true));
+            formatSpecificToolStripMenuItem.DropDownItems.Add(narakaMenu);
 
             var importJson = new ToolStripMenuItem
             {
@@ -557,6 +652,9 @@ namespace AnimeStudio.GUI
                 return;
             var workspace = Path.GetFullPath(workspaceDialog.Folder);
 
+            Interlocked.Increment(ref endfieldSourceRefreshGeneration);
+            endfieldSourceRefreshCancellation.Cancel();
+
             try
             {
                 openEndfieldVfsToolStripMenuItem.Enabled = false;
@@ -576,12 +674,7 @@ namespace AnimeStudio.GUI
                         archive, workspace, game, progress, endfieldIndexCancellation.Token);
                 }
 
-                var sourceProgress = new Progress<string>(message => StatusStripUpdate(message));
                 var sourceUnityVersion = specifyUnityVersion.Text;
-                await endfieldPreviewLock.WaitAsync();
-                try { await Task.Run(() => EndfieldSourceRefresh.Refresh(archive, workspace, sourceProgress, endfieldIndexCancellation.Token, unityVersion: sourceUnityVersion)); }
-                catch (IOException error) { Logger.Error(error.ToString());MessageBox.Show(this, error.Message, "Some EFF sources were retained"); }
-                finally { endfieldPreviewLock.Release(); }
                 StatusStripUpdate("Loading compact Endfield resource paths and dependencies...");
                 var loadedIndex = await Task.Run(() => EndfieldIndexStore.Load(mapPath));
                 if (!string.Equals(loadedIndex.VfsFingerprint, archive.Fingerprint, StringComparison.Ordinal))
@@ -599,6 +692,8 @@ namespace AnimeStudio.GUI
                 assetsManager.SpecifyUnityVersion = specifyUnityVersion.Text;
                 Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion} - Endfield VFS";
                 StatusStripUpdate($"Ready: {archive.LayerCount} VFS layer(s), {archive.Entries.Count:N0} files, {endfieldVirtualPathIndex.AssetCount:N0} assets, {endfieldDependencyIndex.CabCount:N0} CABs; {archive.MissingPayloadCount:N0} unavailable payloads. Select an asset to preview it.");
+                StartEndfieldSourceRefresh(archive, workspace, sourceUnityVersion,
+                    dependencyIndex);
             }
             catch (OperationCanceledException)
             {
@@ -731,9 +826,23 @@ namespace AnimeStudio.GUI
         private void sceneTreeView_BeforeExpand(object sender, TreeViewCancelEventArgs e)
         {
             if (endfieldVirtualPathsToolStripMenuItem?.Checked != true ||
-                e.Node.Tag is not VirtualAssetPathNode source ||
                 e.Node.Nodes.Count != 1 || e.Node.Nodes[0].Tag != null)
                 return;
+
+            if (e.Node.Tag is VirtualAssetFile file && file.IsModel && indexedFileSourceMode)
+            {
+                e.Cancel = true;
+                _ = ExpandVirtualModelAsync(e.Node, file);
+                return;
+            }
+            if (e.Node.Tag is VirtualAssetFile prefab && prefab.IsPrefab && indexedFileSourceMode &&
+                prefab.Records.Any(NarakaAppResIndex.IsContainerRecord))
+            {
+                e.Cancel = true;
+                _ = PreviewNarakaPrefabAsync(prefab, e.Node, expand: true);
+                return;
+            }
+            if (e.Node.Tag is not VirtualAssetPathNode source) return;
 
             e.Node.Nodes.Clear();
             AddVirtualAssetTreeChildren(e.Node, source);
@@ -743,7 +852,11 @@ namespace AnimeStudio.GUI
         {
             foreach (var child in source.Children.Values)
             {
-                var isFile = child.Children.Count == 0 && child.Assets.Count > 0 && !IsLargeUnscopedNode(child);
+                // Catalog records live on their DIRECTORY; object indexes
+                // live on a FILE node. An otherwise childless model/hero
+                // directory must not be collapsed to its first catalog file.
+                var isFile = child.Children.Count == 0 && child.Assets.Count > 0 &&
+                             child.Assets.All(a => !a.ContainerOnly) && !IsLargeUnscopedNode(child);
                 // A file is a leaf. Keep the logical file distinct from the
                 // serialized objects it owns; Prefab selection must resolve
                 // its root GameObject instead of binding to an arbitrary bone.
@@ -773,12 +886,15 @@ namespace AnimeStudio.GUI
                     name = string.IsNullOrWhiteSpace(asset.Name) ? "[unnamed]" : asset.Name;
                 if (!asset.ContainerOnly && !string.IsNullOrWhiteSpace(asset.Type))
                     name += $" [{asset.Type}]";
-                parent.Nodes.Add(new TreeNode(name)
+                var fileNode = new TreeNode(name)
                 {
                     Tag = asset.ContainerOnly
                         ? new VirtualAssetFile(asset.Container, new[] { asset })
                         : asset
-                });
+                };
+                if (fileNode.Tag is VirtualAssetFile modelFile && (modelFile.IsModel || modelFile.IsPrefab))
+                    fileNode.Nodes.Add(new TreeNode("Load meshes...") { Tag = null });
+                parent.Nodes.Add(fileNode);
             }
             if (source.Assets.Count > visibleAssets)
                 parent.Nodes.Add(new TreeNode($"... {source.Assets.Count - visibleAssets:N0} more assets; use Asset List") { Tag = null });
@@ -1450,7 +1566,7 @@ namespace AnimeStudio.GUI
                         case Keys.N:
                             //Normal mode
                             normalMode = (normalMode + 1) % 2;
-                            CreateVAO();
+                            if (narakaPreview == null) CreateVAO();
                             glControl.Invalidate();
                             break;
                     }
@@ -1917,15 +2033,21 @@ namespace AnimeStudio.GUI
             {
                 endfieldSelectedVirtualFile = file;
                 endfieldSelectedPrefabRoot = null;
-                if (file.IsPrefab && (!indexedFileSourceMode ||
+                if (file.IsModel && indexedFileSourceMode && file.Records.Any(NarakaAppResIndex.IsContainerRecord))
+                    await PreviewVirtualModelAsync(e.Node, file, expand: false);
+                else if (file.IsPrefab && (!indexedFileSourceMode ||
                                       file.Records.Any(NarakaAppResIndex.IsContainerRecord)))
-                    await PreviewEndfieldPrefabAsync(file);
+                    await PreviewEndfieldPrefabAsync(file, e.Node);
                 else
                 {
                     var previewRecord = ChooseVirtualFilePreviewAsset(file.Records);
                     if (previewRecord != null)
                         await PreviewVirtualAssetAsync(previewRecord);
                 }
+            }
+            else if (e.Node.Tag is NarakaPreviewSelection part && e.Node.Parent?.Tag is VirtualAssetFile owner)
+            {
+                await PreviewNarakaPrefabAsync(owner, e.Node.Parent, selection: part.Renderer);
             }
             else if (e.Node.Tag is VirtualAssetRecord asset)
             {
@@ -1935,12 +2057,63 @@ namespace AnimeStudio.GUI
             }
         }
 
-        private async Task<GameObject> PreviewEndfieldPrefabAsync(VirtualAssetFile file)
+        private Task ExpandVirtualModelAsync(TreeNode node, VirtualAssetFile file) =>
+            PreviewVirtualModelAsync(node, file, expand: true);
+
+        private async Task PreviewVirtualModelAsync(TreeNode node, VirtualAssetFile file, bool expand)
+        {
+            var record = file.Records.FirstOrDefault();
+            if (record == null || !File.Exists(record.Source)) return;
+            // Expanding and selecting can fire together. The existing preview
+            // lock serializes parsing; reuse an already loaded source Bundle.
+            try
+            {
+                await endfieldPreviewLock.WaitAsync();
+                try
+                {
+                    if (!assetsManager.assetsFileList.Any(f => string.Equals(f.originalPath, record.Source, StringComparison.OrdinalIgnoreCase)))
+                        await LoadIndexedFileClosureAsync(record, CancellationToken.None, resolveDependencies: false);
+                    var meshes = LogicalModelObjects.Resolve(assetsManager.assetsFileList, file.Container);
+                    node.Nodes.Clear();
+                    foreach (var mesh in meshes)
+                    {
+                        var source = mesh.assetsFile.originalPath;
+                        if (string.IsNullOrWhiteSpace(source) || !File.Exists(source)) source = record.Source;
+                        node.Nodes.Add(new TreeNode(mesh.Name + " [Mesh]")
+                        {
+                            Tag = new VirtualAssetRecord(mesh.Name, file.Container, "Mesh", mesh.m_PathID, source, mesh.reader.byteStart)
+                        });
+                    }
+                    if (expand) node.Expand();
+                    lastSelectedItem = meshes.Count > 0 ? CreateVirtualAssetItem(meshes[0], file.Container) : null;
+                    ResetEndfieldPreviewSurface();
+                    if (lastSelectedItem != null && enablePreview.Checked)
+                        PreviewAsset(lastSelectedItem);
+                    if (meshes.Count == 0) PreviewText("No Mesh objects resolved for " + file.Container);
+                    assetInfoLabel.Text = $"Model: {file.Container}\nMeshes: {meshes.Count}\nExpand this file and select a Mesh to preview it.";
+                    assetInfoLabel.Visible = displayInfo.Checked;
+                    StatusStripUpdate($"{meshes.Count} meshes in {file.Name}. Expand the file to choose a mesh.");
+                }
+                finally { endfieldPreviewLock.Release(); }
+            }
+            catch (Exception error)
+            {
+                Logger.Error($"Model preview failed for {file.Container}: {error}");
+                StatusStripUpdate("Model preview failed: " + error.Message);
+            }
+        }
+
+        private async Task<GameObject> PreviewEndfieldPrefabAsync(VirtualAssetFile file, TreeNode node = null)
         {
             if (file == null || !file.IsPrefab || file.Records.Count == 0)
                 return null;
             var isNarakaCatalogRecord = indexedFileSourceMode &&
                                         file.Records.Any(NarakaAppResIndex.IsContainerRecord);
+            if (isNarakaCatalogRecord)
+            {
+                await PreviewNarakaPrefabAsync(file, node);
+                return null;
+            }
             if (!isNarakaCatalogRecord &&
                 (endfieldVfsArchive == null || string.IsNullOrWhiteSpace(endfieldWorkspace)))
             {
@@ -2085,6 +2258,11 @@ namespace AnimeStudio.GUI
 
         private async Task PreviewIndexedFileAssetAsync(VirtualAssetRecord record)
         {
+            if (NarakaAppResIndex.IsContainerRecord(record) && record.Container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+            {
+                await PreviewNarakaPrefabAsync(new VirtualAssetFile(record.Container, new[] { record }));
+                return;
+            }
             assetInfoLabel.Text = $"{record.Type}\n{record.Container}\nSource: {record.Source}\nPathID: {record.PathId}";
             assetInfoLabel.Visible = displayInfo.Checked;
 
@@ -2196,6 +2374,7 @@ namespace AnimeStudio.GUI
 
         private void ResetEndfieldPreviewSurface()
         {
+            ClearNarakaPreview();
             previewPanel.BackgroundImage = Properties.Resources.preview;
             previewPanel.BackgroundImageLayout = ImageLayout.Center;
             previewPanel.ContextMenuStrip = null;
@@ -2364,6 +2543,12 @@ namespace AnimeStudio.GUI
 
         private AssetItem FindLoadedContainerAsset(VirtualAssetRecord record)
         {
+            if (new VirtualAssetFile(record.Container, new[] { record }).IsModel)
+            {
+                var mesh = LogicalModelObjects.Resolve(assetsManager.assetsFileList, record.Container).FirstOrDefault();
+                // A preload texture is never a valid fallback for an FBX.
+                return mesh == null ? null : CreateVirtualAssetItem(mesh, record.Container);
+            }
             if (record.Container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
             {
                 var file = new VirtualAssetFile(record.Container, new[] { record });
@@ -2441,6 +2626,7 @@ namespace AnimeStudio.GUI
         {
             if (assetItem == null)
                 return;
+            ClearNarakaPreview();
             try
             {
                 switch (assetItem.Asset)
@@ -3103,6 +3289,9 @@ namespace AnimeStudio.GUI
 
         public void ResetForm()
         {
+            Interlocked.Increment(ref endfieldSourceRefreshGeneration);
+            endfieldSourceRefreshCancellation.Cancel();
+            ClearNarakaPreview();
             Interlocked.Increment(ref endfieldListOperationGeneration);
             Text = $"AnimeStudio v{System.Windows.Forms.Application.ProductVersion}";
             endfieldVirtualPathsToolStripMenuItem.Checked = false;
@@ -3832,11 +4021,22 @@ namespace AnimeStudio.GUI
             foreach (var file in files)
             {
                 var root = await PreviewEndfieldPrefabAsync(file);
-                if (root != null && await Task.Run(() =>
-                        Exporter.ExportEndfieldPrefab(file, root, folder.Folder, includeResources,
-                            endfieldVirtualAssetRecords.ToArray(), endfieldDependencyIndex,
-                            endfieldVfsArchive?.Fingerprint,
-                            EndfieldVfsAssetIndexBuilder.GetIndexPath(endfieldWorkspace), endfieldVfsArchive.VerifyCurrent)))
+                bool packageExported = false;
+                if (root != null)
+                {
+                    await endfieldPreviewLock.WaitAsync();
+                    try
+                    {
+                        packageExported = await Task.Run(() =>
+                            Exporter.ExportEndfieldPrefab(file, root, folder.Folder, includeResources,
+                                endfieldVirtualAssetRecords.ToArray(), endfieldDependencyIndex,
+                                endfieldVfsArchive?.Fingerprint,
+                                EndfieldVfsAssetIndexBuilder.GetIndexPath(endfieldWorkspace),
+                                endfieldVfsArchive.VerifyCurrent, endfieldVfsArchive));
+                    }
+                    finally { endfieldPreviewLock.Release(); }
+                }
+                if (packageExported)
                 {
                     exported++;
                     if (includeResources)
@@ -3853,21 +4053,67 @@ namespace AnimeStudio.GUI
                 Studio.OpenFolderInExplorer(folder.Folder);
         }
 
-        private async Task RefreshUnpackedEndfieldSourcesAsync()
+        private async Task ExportNarakaPrefabsAsync(bool checkedPrefabs)
         {
-            if (!VerifyEndfieldArchive()) return;
-            using var folder = new FolderBrowserDialog { Description = "Select the existing unpacked resource directory" };
+            if (!Studio.Game.Type.IsNaraka() || !indexedFileSourceMode)
+            {
+                MessageBox.Show(this, "Open Naraka AppRes.info or the game folder first.", "Naraka export");
+                return;
+            }
+            var records = checkedPrefabs
+                ? GetCheckedEndfieldFiles().SelectMany(file => file.Records).ToList()
+                : GetVirtualExportRecords(ExportFilter.Selected);
+            if (!checkedPrefabs && records.Count == 0 && endfieldSelectedVirtualFile != null)
+                records.AddRange(endfieldSelectedVirtualFile.Records);
+            records = records.Where(r => NarakaAppResIndex.IsContainerRecord(r) &&
+                    r.Container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase))
+                .DistinctBy(r => r.Container, StringComparer.OrdinalIgnoreCase).ToList();
+            if (records.Count == 0)
+            {
+                MessageBox.Show(this, "Select Prefabs in Asset List, or check Prefabs in Logical Asset Paths.", "Naraka export");
+                return;
+            }
+            using var folder = new FolderBrowserDialog { Description = "Select Naraka Blender package output folder" };
             if (folder.ShowDialog(this) != DialogResult.OK) return;
+            saveDirectoryBackup = folder.SelectedPath;
             await endfieldPreviewLock.WaitAsync();
+            var completed = 0;
+            var failed = new List<string>();
             try
             {
-                var progress = new Progress<string>(message => StatusStripUpdate(message));
-                var unityVersion = specifyUnityVersion.Text;
-                await Task.Run(() => EndfieldSourceRefresh.Refresh(endfieldVfsArchive, endfieldWorkspace,
-                    progress, endfieldIndexCancellation.Token, folder.SelectedPath, unityVersion));
+                foreach (var record in records)
+                {
+                    StatusStripUpdate($"Naraka Blender package {completed + failed.Count + 1}/{records.Count}: {record.Name}");
+                    var relative = record.Container.Replace('/', Path.DirectorySeparatorChar);
+                    var output = Path.GetFullPath(Path.Combine(folder.SelectedPath,
+                        Path.GetDirectoryName(relative) ?? "", Path.GetFileNameWithoutExtension(relative) + ".naraka"));
+                    try
+                    {
+                        await Task.Run(() => NarakaPrefabPackageCommand.Export(record, output));
+                        completed++;
+                    }
+                    catch (Exception error)
+                    {
+                        failed.Add(record.Container + ": " + error.Message);
+                        Logger.Error("Naraka package export failed: " + error);
+                    }
+                }
             }
-            catch (Exception error) { MessageBox.Show(this, error.Message, "EFF source update"); }
-            finally { endfieldPreviewLock.Release(); }
+            finally { AssetsHelper.ClearOffsets(); endfieldPreviewLock.Release(); }
+            StatusStripUpdate($"Naraka: {completed}/{records.Count} packages exported, {failed.Count} failed.");
+            if (failed.Count > 0) MessageBox.Show(this, string.Join(Environment.NewLine, failed), "Naraka export failures");
+            if (completed > 0 && Properties.Settings.Default.openAfterExport)
+                Studio.OpenFolderInExplorer(folder.SelectedPath);
+        }
+
+        private Task RefreshUnpackedEndfieldSourcesAsync()
+        {
+            if (!VerifyEndfieldArchive()) return Task.CompletedTask;
+            using var folder = new FolderBrowserDialog { Description = "Select the existing unpacked resource directory" };
+            if (folder.ShowDialog(this) != DialogResult.OK) return Task.CompletedTask;
+            StartEndfieldSourceRefresh(endfieldVfsArchive, endfieldWorkspace,
+                specifyUnityVersion.Text, endfieldDependencyIndex, folder.SelectedPath);
+            return Task.CompletedTask;
         }
 
         private async Task ExportEndfieldVirtualAssets(List<VirtualAssetRecord> records, string output)
@@ -4895,6 +5141,13 @@ namespace AnimeStudio.GUI
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             GL.Enable(EnableCap.DepthTest);
             GL.DepthFunc(DepthFunction.Lequal);
+            if (narakaPreview != null)
+            {
+                narakaPreview.DrawScene(modelMatrixData, viewMatrixData,
+                    NarakaPreviewCamera.Projection(glControl.Width, glControl.Height), wireFrameMode, shadeMode == 0);
+                GL.Flush(); glControl.SwapBuffers(); return;
+            }
+            if (indiceData == null || vao == 0) { glControl.SwapBuffers(); return; }
             GL.BindVertexArray(vao);
             if (wireFrameMode == 0 || wireFrameMode == 2)
             {

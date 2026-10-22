@@ -64,6 +64,61 @@ try
     Check(messages.Any(m => m.Contains("without a Prefab anchor")) && File.ReadAllText(Path.Combine(standalone, "source", "manifest.json")) == standaloneManifest,
         "Standalone material source was modified or skipped silently");
     Console.WriteLine("PASS standalone material source skip without missing-key exception");
+
+    const string sourceBundle = "Bundles/Windows/main/source.ab";
+    const string dependencyBundle = "Bundles/Windows/main/dependency.ab";
+    const string unrelatedBundle = "Bundles/Windows/main/unrelated.ab";
+    const string sourceMd5 = "11111111111111111111111111111111";
+    const string dependencyMd5 = "22222222222222222222222222222222";
+    using var sourceManifest = JsonDocument.Parse("""
+        {
+          "vfsFingerprint":"old-vfs",
+          "sourceIndex":"workspace/index/endfield_assets.eidx",
+          "closure":["Bundles/Windows/main/source.ab","Bundles/Windows/main/dependency.ab"],
+          "bundleInputs":[
+            {"path":"Bundles/Windows/main/source.ab","fileDataMd5":"11111111111111111111111111111111","length":100},
+            {"path":"Bundles/Windows/main/dependency.ab","fileDataMd5":"22222222222222222222222222222222","length":200}
+          ]
+        }
+        """);
+    EndfieldVfsEntry Entry(string path, string md5, long length) =>
+        new(path, "fixture.blc", "fixture.chk", 0, length, false, 0, 0, 0, md5);
+    var currentBundles = new Dictionary<string, EndfieldVfsEntry>(StringComparer.OrdinalIgnoreCase)
+    {
+        [sourceBundle] = Entry(sourceBundle, sourceMd5, 100),
+        [dependencyBundle] = Entry(dependencyBundle, dependencyMd5, 200),
+        [unrelatedBundle] = Entry(unrelatedBundle, "33333333333333333333333333333333", 300)
+    };
+    Check(!EndfieldSourceRefresh.NeedsRefresh(sourceManifest.RootElement, "new-vfs",
+        "workspace/index/endfield_assets.eidx", currentBundles),
+        "Unrelated VFS changes do not refresh an unchanged source closure");
+    Check(!EndfieldSourceRefresh.NeedsRefresh(sourceManifest.RootElement, "new-vfs",
+        "workspace/index/endfield_assets.eidx", currentBundles,
+        currentClosure: new[] { sourceBundle, dependencyBundle }),
+        "Unrelated VFS changes do not refresh when the current dependency closure matches");
+    currentBundles[dependencyBundle] = Entry(dependencyBundle,
+        "44444444444444444444444444444444", 200);
+    Check(EndfieldSourceRefresh.NeedsRefresh(sourceManifest.RootElement, "new-vfs",
+        "workspace/index/endfield_assets.eidx", currentBundles),
+        "Changed dependency Bundle refreshes its source package");
+    currentBundles[dependencyBundle] = Entry(dependencyBundle, dependencyMd5, 200);
+    Check(EndfieldSourceRefresh.NeedsRefresh(sourceManifest.RootElement, "old-vfs",
+        "workspace/index/endfield_assets.eidx", currentBundles,
+        currentClosure: new[] { sourceBundle, dependencyBundle, unrelatedBundle }),
+        "Changed Prefab dependency closure refreshes its source package");
+    Check(EndfieldSourceRefresh.NeedsRefresh(sourceManifest.RootElement, "new-vfs",
+        "workspace/index/endfield_assets.eidx", currentBundles, force: true),
+        "Explicit source refresh forces regeneration");
+    using var legacySourceManifest = JsonDocument.Parse("""
+        {"vfsFingerprint":"old-vfs","sourceIndex":"workspace/index/endfield_assets.eidx"}
+        """);
+    Check(!EndfieldSourceRefresh.NeedsRefresh(legacySourceManifest.RootElement, "old-vfs",
+        "workspace/index/endfield_assets.eidx", currentBundles) &&
+        EndfieldSourceRefresh.NeedsRefresh(legacySourceManifest.RootElement, "new-vfs",
+            "workspace/index/endfield_assets.eidx", currentBundles),
+        "Legacy manifests keep same-VFS fast path and migrate after a game update");
+    Console.WriteLine("PASS source refresh selection: unchanged closure skip, dependency change, explicit refresh and legacy migration");
+
     if (args.Length == 3 && args[0] == "--portable-real")
     {
         var archive = EndfieldVfsArchive.Open(args[1]);var workspace = args[2];var payload = Path.Combine(root, "game.effindex.gz");

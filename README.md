@@ -1,6 +1,6 @@
 # Anime Studio
 
-本 EFF fork 发布 **v1.6.0**，配套 [EFF v1.7.0](https://github.com/ssice-a/EFF/releases/tag/v1.7.0) 与 [EFF Blender v0.44.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.44.0)。选择游戏 Prefab 导出 EFF 源包，再在 Blender 中制作并导出 Mod。
+本 EFF fork 发布 **v1.8.0**，配套 [EFF v1.9.0](https://github.com/ssice-a/EFF/releases/tag/v1.9.0) 与 [EFF Blender v0.47.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.47.0)。选择游戏 Prefab 或特效资源导出 EFF 源包，再在 Blender 中制作并导出 Mod。
 
 ### 终末地 EFF 导出
 
@@ -20,6 +20,42 @@
 检查失败不会影响浏览、解包或导出，程序不会自行覆盖安装。
 
 ## Asset extraction tool for unity games !
+
+### Naraka / 永劫无间 Blender packages
+
+打开游戏根目录或 `NarakaBladepoint_Data/StreamingAssets/AppRes.info`，在 Asset List
+选择时装 UI Prefab，使用 **Export → Format specific → Naraka / 永劫无间 →
+Selected Prefabs as Blender packages...**；Logical Asset Paths 树中勾选多个
+Prefab 时使用 **Checked Prefabs as Blender packages...**。
+
+UI 时装文件在 `assets/res/prefab/actor_visual_part/<角色目录>/`，选择具体的
+`*_ui.prefab`；角色目录本身不代表一套时装。模型文件通常在
+`assets/res/character/female/<角色目录>/model/`（男性为 `male`），展开 `.fbx`
+后可直接点击其中的 `[Mesh]` 子项，在右侧查看几何。选择 FBX 默认预览第一个 Mesh；
+永劫无间 Prefab 现在可直接点击预览其组合网格与基础色贴图；展开 Prefab 可逐个选择
+网格，底部“显示全部网格”包含低精度 LOD 与未启用项。默认只组合启用的高精度网格，
+避免多个 LOD 叠加。完整 Shader 效果与编辑请导出后在 Blender 查看。
+
+每个 `.naraka` 包保留所选 Prefab 全部网格实例、层级、蒙皮、材质槽、贴图及原始材质参数，
+复用 EFF 原生网格格式和暂存/备份发布流程。配套独立 Naraka Blender 插件读取
+`naraka.json`，不要求安装 EFF 插件。材质在 Blender 中重建，已验证 Periodic2
+服装的周期发光节点；未知 Shader 和近似部分在导入报告中列出。游戏运行时另行加载的对象、
+完整主体骨架/动画及灯光不由衣服 Prefab 自动提供。Renderer 缺少骨骼指针时，导出器会按 Mesh 的精确 FBX 来源与完整 Transform 路径哈希恢复可核对的骨名及父子关系，并保留原有骨骼槽顺序；无法唯一匹配时保留哈希并报告。旧哈希包需重新导出，Blender 0.2.4 已能读取补齐的骨骼引用。
+
+D 图 A 按已识别 Shader 与材质参数使用；有 A 通道或裁切阈值不等于半透明。
+未知 Shader 保留 A 数据并报告待适配，不自动接到透明度。插件 0.2.1 修正相关判断，
+已有包无需重导，更新后重新导入以建立新材质。
+
+组合预览使用与 GL 正面一致的正交深度方向，修复外表面透出模型内侧的问题，
+透明层按相机远近排序；已通过真实 GL 的外壳、剔除、深度、透明排序和多角度资源检查。
+
+部分头发的原生 `m_Mesh` 为空，实际数据通过 RendererAssistant 的 `avatarMeshAsset`
+提供。现在预览与导出均按精确引用读取已识别的 v2 runtime mesh，保留全部网格及原始
+自定义数据；未知布局明确报错。普通/UI 头发、衣服和武器的导出前后预览回归通过。
+
+```text
+AnimeStudio.GUI.exe --export-naraka-prefab <game-root-or-AppRes.info> <logical-prefab> <output-directory>
+```
 
 ![image](https://github.com/user-attachments/assets/fc1decdc-a589-43a2-b965-2d8151d0975f)
 
@@ -161,3 +197,11 @@ The native side is built on other people's work :
 - [FMOD Engine](https://www.fmod.com/) by Firelight Technologies - audio preview and export
 
 FMOD is used under Firelight's free license for non commercial use, and the FBX SDK under Autodesk's terms. Everything else is MIT or similar, see each project for details.
+
+## Endfield 来源位置与内容
+
+现有完整索引可以按逻辑 Bundle 路径、内容 MD5 和长度校验并重新绑定当前 CHK 位置。仅位置或偏移变化时无需重新解析 Bundle；内容变化继续由增量索引处理。EFF 导出入口与 EFF Repair 使用同一重绑实现，不把旧物理路径或本机索引时间当作资源身份。
+
+## Endfield 独立特效来源
+
+EFF 菜单的 `Checked Prefabs as EFF effect sources...` 可导出纯粒子或含脚本特效 PFB 为 `.efffx` 解析来源，保留完整原生底稿、层级、粒子模块及资源引用。此版本是解析层，尚不包含 Blender 编辑器或游戏播放/热重载。格式、CLI 和验证方法见 [独立特效来源说明](docs/endfield-effects-source.md)。

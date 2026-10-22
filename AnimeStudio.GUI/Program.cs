@@ -14,6 +14,18 @@ namespace AnimeStudio.GUI
         [STAThread]
         static void Main(string[] args)
         {
+            if (args?.Length > 0 && string.Equals(args[0], "--build-eff-effects", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = EiemEffectBuildCommand.Run(args); return;
+            }
+            if (args?.Length > 0 && string.Equals(args[0], "--export-eff-effects", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = EndfieldEffectSourceCommand.Run(args); return;
+            }
+            if (args?.Length > 0 && args[0] == "--export-naraka-prefab")
+            {
+                Environment.ExitCode = NarakaPrefabPackageCommand.Run(args); return;
+            }
             if (args?.Length > 0 && args[0] is "--pack-eff-index" or "--import-eff-index" or "--refresh-eff-sources")
             {
                 Environment.ExitCode = EffIndexExchangeCommand.Run(args);return;

@@ -7,6 +7,8 @@ namespace AnimeStudio
 {
     public abstract class EditorExtension : Object
     {
+        protected EditorExtension(Object source) : base(source) { }
+
         protected EditorExtension(ObjectReader reader) : base(reader)
         {
             if (platform == BuildTarget.NoTarget)

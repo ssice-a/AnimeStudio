@@ -11,6 +11,8 @@ namespace AnimeStudio
 
         public override string Name => m_Name;
 
+        protected NamedObject(Object source, string name) : base(source) { m_Name = name; }
+
         protected NamedObject(ObjectReader reader) : base(reader)
         {
             m_Name = reader.ReadAlignedString();

@@ -82,8 +82,11 @@ foreach ($tfm in $Frameworks) {
     New-Item -ItemType Directory -Force "$outputDir/bin" | Out-Null
 
     # copy to output
-    Copy-Item "$cliOut/*" "$outputDir/bin" -Recurse -Force
-    Copy-Item "$guiOut/*" "$outputDir/bin" -Recurse -Force
+    foreach ($source in $cliOut, $guiOut) {
+        Get-ChildItem -LiteralPath $source -Force |
+            Where-Object { $_.Name -notin @('log.txt', 'log_prev.txt') } |
+            Copy-Item -Destination "$outputDir/bin" -Recurse -Force
+    }
 
     # move launcher exes next to bin/
     foreach ($exe in 'AnimeStudio.GUI.exe', 'AnimeStudio.CLI.exe') {

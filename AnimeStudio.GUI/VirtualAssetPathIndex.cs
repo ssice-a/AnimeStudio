@@ -23,6 +23,8 @@ namespace AnimeStudio.GUI
         public string Name => Path.GetFileName(Container.Replace('\\', '/'));
         public string Stem => Path.GetFileNameWithoutExtension(Name);
         public bool IsPrefab => Name.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase);
+        public bool IsModel => Name.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) ||
+                               Name.EndsWith(".mesh", StringComparison.OrdinalIgnoreCase);
 
         public VirtualAssetFile(string container, IReadOnlyList<VirtualAssetRecord> records)
         {
