@@ -198,6 +198,7 @@ internal static class IncrementalIndexTests
             var importedWorkspace = Path.Combine(root, "public-import");var imported = EndfieldPortableIndex.Import(other, importedWorkspace, packed, CancellationToken.None);
             Check(EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(other, importedWorkspace, out _), "Portable index not accepted by AnimeStudio");
             Check(EndfieldIndexStore.Load(imported).StoredAssetCount == EndfieldIndexStore.Load(parserIndex).StoredAssetCount, "Portable asset records lost");
+            IndexDistributionTests.Registry(publisher, parserWorkspace, other, importedWorkspace);
             var accepted = File.ReadAllBytes(imported);var truncated = Path.Combine(root, "truncated.effindex.gz");File.WriteAllBytes(truncated, File.ReadAllBytes(packed).Take(30).ToArray());
             Reject(() => EndfieldPortableIndex.Import(other, importedWorkspace, truncated, CancellationToken.None), "Truncated portable payload");
             Check(accepted.SequenceEqual(File.ReadAllBytes(imported)), "Failed public import changed current index");

@@ -17,7 +17,7 @@
 
 本次发布支持增量来源索引。请保留工作区 `index/`：原 `endfield_assets.eidx` 旁增加一个 `.eidx.bundles` 文件，用于记录每 Bundle 的内容身份与索引范围，不生成逐包小文件。精确匹配当前资源的旧完整两层索引可直接迁移，旧游戏身份且缺少逐包记录时才需要重新建立基线；升级软件不因版本标签直接使索引失效。变化更新仍需读写紧凑索引，进度显示 parsed/reused/removed。新版支持 BLC v5。打开当前游戏及原工作区后，在后台检查工作区已有和已登记的解包源包，仅在可靠逐 Bundle 内容记录或依赖闭包证明相关输入改变时自动刷新；没有完整记录的老包保持原样，原因写入工作区 `source-update-skipped.log`。全局指纹或索引路径变化不单独触发源包刷新。其他目录或需要明确重新提取的老包，可从 EFF 菜单选择 Update previously unpacked EFF resources。旧源包完整备份，保留逻辑资源的文件名和段名。原 Blender 工程可接受更新后的来源并重新导出；解包器不会自动保存 blend 或修改游戏 Mod。
 
-有效工作区自动登记到 `%LOCALAPPDATA%/EFF/Resources/registry.json`，供新版 Blender 与 EFF Repair 复用；旧工作区留在原处，不复制全量索引。`EFF_RESOURCE_ROOT` 可更换公共根，`EFF_INDEX_CATALOG` 可配置 GitHub Release API/直接 catalog HTTPS 地址。下载和 Repair 共用压缩包缓存。工作区完整索引仍需 `.eidx`、`.eidx.bundles` 与 `endfield-index-manifest.json`；索引不能代替 `source/manifest.json` 及清单引用的作者源快照。本次未上传 GitHub 索引附件，无匹配包时仍可本地构建或导入。
+有效工作区自动登记到 `%LOCALAPPDATA%/EFF/Resources/registry.json`，供新版 Blender 与 EFF Repair 复用；旧工作区留在原处，不复制全量索引。`EFF_RESOURCE_ROOT` 可更换公共根，`EFF_INDEX_CATALOG` 可配置 GitHub Release API/直接 catalog HTTPS 地址。下载和 Repair 共用压缩包缓存。工作区完整索引仍需 `.eidx`、`.eidx.bundles` 与 `endfield-index-manifest.json`；索引不能代替 `source/manifest.json` 及清单引用的作者源快照。匹配当前已发布游戏内容的完整索引已附在 EFF v1.9.0 Release；无匹配包时仍可本地构建或导入。
 
 本 EFF fork 的 GUI 显示后会异步检查 `ssice-a/AnimeStudio` 的最新正式 Release。
 发现新版本可打开下载页、稍后再说或忽略此版本；About 页也可手动重新检查。
@@ -45,8 +45,6 @@ UI 时装文件在 `assets/res/prefab/actor_visual_part/<角色目录>/`，选�
 `naraka.json`，不要求安装 EFF 插件。材质在 Blender 中重建，已验证 Periodic2
 服装的周期发光节点；未知 Shader 和近似部分在导入报告中列出。游戏运行时另行加载的对象、
 完整主体骨架/动画及灯光不由衣服 Prefab 自动提供。Renderer 缺少骨骼指针时，导出器会按 Mesh 的精确 FBX 来源与完整 Transform 路径哈希恢复可核对的骨名及父子关系，并保留原有骨骼槽顺序；无法唯一匹配时保留哈希并报告。旧哈希包需重新导出，Blender 0.2.4 已能读取补齐的骨骼引用。
-
-导出时会继续读取所选时装 Prefab 中序列化的 `PrefabLoader` 路径，递归打包静态引用的 FX Prefab、组件字段、真实 Renderer Mesh、独立 Mesh、材质与贴图。Blender 插件 0.4.0 将这些资源放入独立的 **Effects** 集合；Billboard 类粒子使用带来源标记的静态 Unity 四边形检查代理，粒子不会播放，代理也不作为源模型。运行时脚本创建或切换的资源不属于静态引用范围；旧包需要在 AnimeStudio 重新导出才能包含特效。
 
 D 图 A 按已识别 Shader 与材质参数使用；有 A 通道或裁切阈值不等于半透明。
 未知 Shader 保留 A 数据并报告待适配，不自动接到透明度。插件 0.2.1 修正相关判断，
