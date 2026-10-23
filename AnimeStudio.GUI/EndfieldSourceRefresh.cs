@@ -40,40 +40,45 @@ internal static class EndfieldSourceRefresh
         IReadOnlyDictionary<string, EndfieldVfsEntry> currentBundles,
         IReadOnlyCollection<string> currentClosure = null)
     {
-        if (!manifest.TryGetProperty("closure", out var closureElement) ||
-            closureElement.ValueKind != JsonValueKind.Array ||
-            !manifest.TryGetProperty("bundleInputs", out var inputsElement) ||
-            inputsElement.ValueKind != JsonValueKind.Array || inputsElement.GetArrayLength() == 0)
-            return false;
-
-        static string Normalize(string path) => path.Replace('\\', '/').Trim('/').ToLowerInvariant();
-        var closure = closureElement.EnumerateArray()
-            .Where(item => item.ValueKind == JsonValueKind.String)
-            .Select(item => Normalize(item.GetString() ?? string.Empty))
-            .Where(path => path.Length > 0)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!TryReadBundleInputs(manifest, out var inputs)) return false;
         if (currentClosure != null)
         {
             var normalizedCurrent = currentClosure.Select(Normalize)
                 .Where(path => path.Length > 0)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (!closure.SetEquals(normalizedCurrent)) return false;
+            if (!normalizedCurrent.SetEquals(inputs.Keys)) return false;
         }
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return inputs.All(input => currentBundles.TryGetValue(input.Key, out var current) &&
+            current.Length == input.Value.Length && string.Equals(current.FileDataMd5, input.Value.Md5, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string Normalize(string path) => path.Replace('\\', '/').Trim('/').ToLowerInvariant();
+
+    private static bool TryReadBundleInputs(JsonElement manifest, out Dictionary<string, (string Md5, long Length)> inputs)
+    {
+        inputs = new(StringComparer.OrdinalIgnoreCase);
+        if (!manifest.TryGetProperty("closure", out var closureElement) || closureElement.ValueKind != JsonValueKind.Array ||
+            !manifest.TryGetProperty("bundleInputs", out var inputsElement) || inputsElement.ValueKind != JsonValueKind.Array || inputsElement.GetArrayLength() == 0)
+            return false;
+        var closure = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in closureElement.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString())) return false;
+            var path = Normalize(item.GetString());
+            if (path.Length == 0 || !closure.Add(path)) return false;
+        }
         foreach (var input in inputsElement.EnumerateArray())
         {
-            if (!input.TryGetProperty("path", out var pathElement) || pathElement.ValueKind != JsonValueKind.String ||
+            if (input.ValueKind != JsonValueKind.Object || !input.TryGetProperty("path", out var pathElement) || pathElement.ValueKind != JsonValueKind.String ||
                 !input.TryGetProperty("fileDataMd5", out var md5Element) || md5Element.ValueKind != JsonValueKind.String ||
-                !input.TryGetProperty("length", out var lengthElement) || lengthElement.ValueKind != JsonValueKind.Number)
+                !input.TryGetProperty("length", out var lengthElement) || lengthElement.ValueKind != JsonValueKind.Number ||
+                !lengthElement.TryGetInt64(out var length) || length <= 0)
                 return false;
-            var path = Normalize(pathElement.GetString() ?? string.Empty);
-            if (path.Length == 0 || !closure.Contains(path) || !seen.Add(path) ||
-                !currentBundles.TryGetValue(path, out var current) ||
-                current.Length != lengthElement.GetInt64() ||
-                !string.Equals(current.FileDataMd5, md5Element.GetString(), StringComparison.OrdinalIgnoreCase))
+            var path = Normalize(pathElement.GetString());var md5 = md5Element.GetString();
+            if (path.Length == 0 || md5.Length != 32 || !md5.All(Uri.IsHexDigit) || !closure.Contains(path) || !inputs.TryAdd(path, (md5, length)))
                 return false;
         }
-        return seen.SetEquals(closure);
+        return closure.SetEquals(inputs.Keys);
     }
 
     internal static bool NeedsRefresh(JsonElement manifest, string currentFingerprint,
@@ -83,18 +88,14 @@ internal static class EndfieldSourceRefresh
         if (force) return true;
         if (BundleInputsMatch(manifest, currentBundles, currentClosure)) return false;
 
-        // Legacy manifests have no per-Bundle stamps. Avoid rewriting them on
-        // every open when their exact original VFS and index are still active.
-        bool sameVfs = manifest.TryGetProperty("vfsFingerprint", out var fingerprint) &&
-            fingerprint.ValueKind == JsonValueKind.String &&
-            string.Equals(fingerprint.GetString(), currentFingerprint, StringComparison.Ordinal);
-        bool sameIndex = manifest.TryGetProperty("sourceIndex", out var index) &&
-            index.ValueKind == JsonValueKind.String &&
-            string.Equals(index.GetString(), currentIndex, StringComparison.OrdinalIgnoreCase);
-        bool hasBundleInputs = manifest.TryGetProperty("bundleInputs", out var inputs) &&
-            inputs.ValueKind == JsonValueKind.Array;
-        return hasBundleInputs || !sameVfs || !sameIndex;
+        // A global installation fingerprint or an old absolute index path
+        // cannot prove that this package's inputs changed. Legacy packages
+        // without content records require an explicit refresh by the author.
+        return HasBundleInputs(manifest);
     }
+
+    private static bool HasBundleInputs(JsonElement manifest) =>
+        TryReadBundleInputs(manifest, out _);
 
     internal static int Refresh(EndfieldVfsArchive archive, string workspace, IProgress<string> progress,
         CancellationToken token, string outputRoot = null, string unityVersion = null,
@@ -119,6 +120,11 @@ internal static class EndfieldSourceRefresh
                 {
                     var message = "Skipped source without a Prefab anchor (retained unchanged): " + package;
                     skipped.Add(message);progress?.Report(message);continue;
+                }
+                if (outputRoot == null && !HasBundleInputs(root))
+                {
+                    var message = "Skipped legacy source without Bundle content records (retained unchanged; refresh manually if needed): " + package;
+                    skipped.Add(message);continue;
                 }
                 if (!NeedsRefresh(root, archive.Fingerprint, currentIndex, archive.Entries,
                         force: outputRoot != null,
@@ -162,7 +168,7 @@ internal static class EndfieldSourceRefresh
         if (skipped.Count > 0) File.WriteAllLines(skippedLog, skipped);else if (File.Exists(skippedLog)) File.Delete(skippedLog);
         var log = Path.Combine(workspace, "source-update-errors.log");
         if (failures.Count > 0) File.WriteAllLines(log, failures);else if (File.Exists(log)) File.Delete(log);
-        progress?.Report($"Source update finished: {updated} updated, {unchanged} unchanged, {skipped.Count} skipped without a Prefab anchor, {failures.Count} failed (failed packages retained)");
+        progress?.Report($"Source update finished: {updated} updated, {unchanged} unchanged, {skipped.Count} skipped without source records, {failures.Count} failed (failed packages retained)");
         if (failures.Count > 0) throw new IOException("Some unpacked sources could not be updated; failed packages were retained. See " + log);
         return updated;
     }

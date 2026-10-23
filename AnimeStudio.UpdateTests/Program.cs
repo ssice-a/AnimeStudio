@@ -114,10 +114,57 @@ try
         """);
     Check(!EndfieldSourceRefresh.NeedsRefresh(legacySourceManifest.RootElement, "old-vfs",
         "workspace/index/endfield_assets.eidx", currentBundles) &&
-        EndfieldSourceRefresh.NeedsRefresh(legacySourceManifest.RootElement, "new-vfs",
-            "workspace/index/endfield_assets.eidx", currentBundles),
-        "Legacy manifests keep same-VFS fast path and migrate after a game update");
-    Console.WriteLine("PASS source refresh selection: unchanged closure skip, dependency change, explicit refresh and legacy migration");
+        !EndfieldSourceRefresh.NeedsRefresh(legacySourceManifest.RootElement, "new-vfs",
+            "moved-workspace/index/endfield_assets.eidx", currentBundles),
+        "Global fingerprint and path changes must not invalidate legacy packages");
+    Check(EndfieldSourceRefresh.NeedsRefresh(legacySourceManifest.RootElement, "new-vfs",
+        "moved-workspace/index/endfield_assets.eidx", currentBundles, force: true),
+        "Author can explicitly refresh legacy packages");
+    Console.WriteLine("PASS source refresh selection: unchanged closure skip, dependency change, explicit refresh and legacy preservation");
+
+    var legacyWorkspace = Path.Combine(root, "legacy-workspace");
+    var retained = new Dictionary<string, byte[]>();
+    var incompleteRecords = new[]
+    {
+        ("missing", "{}"),
+        ("empty", """{"closure":["source.ab"],"bundleInputs":[]}"""),
+        ("incomplete", """{"closure":["source.ab","dependency.ab"],"bundleInputs":[{"path":"source.ab","fileDataMd5":"11111111111111111111111111111111","length":100}]}"""),
+        ("string-length", """{"closure":["source.ab"],"bundleInputs":[{"path":"source.ab","fileDataMd5":"11111111111111111111111111111111","length":"100"}]}"""),
+        ("null-length", """{"closure":["source.ab"],"bundleInputs":[{"path":"source.ab","fileDataMd5":"11111111111111111111111111111111","length":null}]}"""),
+        ("bad-hash", """{"closure":["source.ab"],"bundleInputs":[{"path":"source.ab","fileDataMd5":"invalid","length":100}]}"""),
+        ("duplicate", """{"closure":["source.ab"],"bundleInputs":[{"path":"source.ab","fileDataMd5":"11111111111111111111111111111111","length":100},{"path":"SOURCE.AB","fileDataMd5":"11111111111111111111111111111111","length":100}]}"""),
+        ("empty-path", """{"closure":["/"],"bundleInputs":[{"path":"/","fileDataMd5":"11111111111111111111111111111111","length":100}]}"""),
+        ("bad-closure", """{"closure":null,"bundleInputs":[{"path":"source.ab","fileDataMd5":"11111111111111111111111111111111","length":100}]}""")
+    };
+    foreach (var (name, records) in incompleteRecords)
+    {
+        using var record = JsonDocument.Parse(records);
+        Check(!EndfieldSourceRefresh.NeedsRefresh(record.RootElement, "new-vfs", "moved-index", currentBundles),
+            "Incomplete source records triggered automatic refresh: " + name);
+        Check(EndfieldSourceRefresh.NeedsRefresh(record.RootElement, "new-vfs", "moved-index", currentBundles, force: true),
+            "Explicit refresh was blocked by incomplete source records: " + name);
+        var fields = record.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => (object)p.Value.Clone());
+        fields["format"] = "EFFSOURCE";fields["prefab"] = "assets/characters/fixture.prefab";
+        fields["vfsFingerprint"] = "old-vfs";fields["sourceIndex"] = "missing-old-workspace/index/endfield_assets.eidx";
+        var legacy = Path.Combine(legacyWorkspace, "assets", name + ".eff");
+        Directory.CreateDirectory(Path.Combine(legacy, "source"));
+        var manifest = Path.Combine(legacy, "source", "manifest.json");
+        var author = Path.Combine(legacy, "author-mesh.mesh");
+        File.WriteAllText(manifest, JsonSerializer.Serialize(fields));File.WriteAllText(author, "author geometry " + name);
+        retained[manifest] = File.ReadAllBytes(manifest);retained[author] = File.ReadAllBytes(author);
+    }
+    // No archive is needed: these packages must be retained before any VFS access or extraction.
+    messages.Clear();
+    Check(EndfieldSourceRefresh.Refresh(null!, legacyWorkspace, new InlineProgress(messages.Add), CancellationToken.None) == 0,
+        "Automatic refresh tried to extract legacy packages");
+    foreach (var (path, bytes) in retained)
+        Check(File.ReadAllBytes(path).SequenceEqual(bytes), "Automatic refresh modified a legacy source or author file: " + path);
+    var skipped = File.ReadAllLines(Path.Combine(legacyWorkspace, "source-update-skipped.log"));
+    Check(skipped.Length == incompleteRecords.Length && incompleteRecords.All(c => skipped.Any(line => line.Contains(c.Item1 + ".eff"))),
+        "Skipped legacy sources were not recorded");
+    Check(!File.Exists(Path.Combine(legacyWorkspace, "source-update-errors.log")) && messages.Any(m => m.Contains("0 failed")),
+        "Incomplete records were treated as failed extraction");
+    Console.WriteLine("PASS automatic legacy source retention: missing, malformed and incomplete Bundle records; author files unchanged; skip log available");
 
     if (args.Length == 3 && args[0] == "--portable-real")
     {

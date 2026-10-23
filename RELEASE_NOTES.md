@@ -1,6 +1,11 @@
-# AnimeStudio v1.8.0
+# AnimeStudio v1.8.1
 
-配套：[EFF v1.9.0](https://github.com/ssice-a/EFF/releases/tag/v1.9.0)、[EFF Blender v0.47.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.47.0)。
+配套：[EFF v1.9.0](https://github.com/ssice-a/EFF/releases/tag/v1.9.0)、[EFF Blender v0.48.0](https://github.com/ssice-a/EFF-blender/releases/tag/v0.48.0)。
+
+- 打开游戏与资源工作区后登记完整索引位置，供 EFF Repair 和 Blender 复用；保留已有工作区，不复制整份索引。
+- 可选择下载预建索引、本地构建或导入索引包；索引准备在后台进行并可取消，游戏角色资源仍按需从本机解包。
+- 自动源包刷新依据可靠的逐 Bundle 内容和依赖记录；旧包缺少完整记录时保留原文件，不因全局指纹、版本或索引路径变化而重解包。
+- 修正以前会在 AnimeStudio 更新时无条件修补已导出 Mod 的流程；仅在实际资源文件内容或依赖闭包改变时才在后台刷新来源。
 
 - 增加终末地 ParticleSystem 特效来源读取：解包原生特效档案及其引用资源，导出可由 Blender 特效编辑器直接导入的 `.efffx` 源包。
 - 保留特效层级、原始组件数据、字段类型、引用 Mesh/材质/贴图和序列帧资源；未适配字段保留在来源数据中供编辑器识别。

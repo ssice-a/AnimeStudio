@@ -643,42 +643,31 @@ namespace AnimeStudio.GUI
                 return;
             }
 
-            var workspaceDialog = new OpenFolderDialog
-            {
-                Title = "Select workspace for the on-demand cache",
-                InitialFolder = string.IsNullOrWhiteSpace(endfieldWorkspace) ? Path.GetPathRoot(Environment.CurrentDirectory) : endfieldWorkspace
-            };
-            if (workspaceDialog.ShowDialog(this) != DialogResult.OK)
-                return;
-            var workspace = Path.GetFullPath(workspaceDialog.Folder);
-
             Interlocked.Increment(ref endfieldSourceRefreshGeneration);
             endfieldSourceRefreshCancellation.Cancel();
 
             try
             {
                 openEndfieldVfsToolStripMenuItem.Enabled = false;
+                endfieldIndexCancellation.Cancel();
+                endfieldIndexCancellation.Dispose();
+                endfieldIndexCancellation = new CancellationTokenSource();
                 StatusStripUpdate("Reading Endfield VFS metadata...");
                 var archive = await Task.Run(() => EndfieldVfsArchive.Open(vfsRoot));
+                var workspace = await SelectEndfieldWorkspace(archive);
+                if (workspace == null)
+                    return;
                 var game = GameManager.GetGameByType(GameType.ArknightsEndfield);
 
-                string mapPath;
-                if (!EndfieldVfsAssetIndexBuilder.TryGetCurrentIndex(archive, workspace, out mapPath))
-                {
-                    endfieldIndexCancellation.Cancel();
-                    endfieldIndexCancellation.Dispose();
-                    endfieldIndexCancellation = new CancellationTokenSource();
-                    var progress = new Progress<EndfieldIndexProgress>(UpdateEndfieldIndexProgress);
-                    StatusStripUpdate("No current resource index. Building directly from VFS; File > Abort pauses safely.");
-                    mapPath = await EndfieldVfsAssetIndexBuilder.BuildAsync(
-                        archive, workspace, game, progress, endfieldIndexCancellation.Token);
-                }
+                var mapPath = await PrepareEndfieldIndex(archive, workspace, game);
 
                 var sourceUnityVersion = specifyUnityVersion.Text;
                 StatusStripUpdate("Loading compact Endfield resource paths and dependencies...");
                 var loadedIndex = await Task.Run(() => EndfieldIndexStore.Load(mapPath));
                 if (!string.Equals(loadedIndex.VfsFingerprint, archive.Fingerprint, StringComparison.Ordinal))
                     throw new InvalidDataException("The Endfield index belongs to a different VFS version.");
+                if (!await Task.Run(() => EndfieldSharedIndexes.TryRemember(archive, workspace, endfieldIndexCancellation.Token)))
+                    Logger.Warning("The resource index is ready, but its shared location could not be saved.");
                 var assetIndex = loadedIndex.Assets;
                 var dependencyIndex = loadedIndex.Dependencies;
 
@@ -697,7 +686,7 @@ namespace AnimeStudio.GUI
             }
             catch (OperationCanceledException)
             {
-                StatusStripUpdate("Endfield index build paused. Open the same VFS/workspace to resume from the last checkpoint.");
+                StatusStripUpdate("索引准备已取消。已有资源保留；本地构建可再次打开同一工作区继续。");
             }
             catch (Exception ex)
             {
