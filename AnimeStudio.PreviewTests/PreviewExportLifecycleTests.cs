@@ -13,6 +13,7 @@ internal static class PreviewExportLifecycleTests
         Directory.CreateDirectory(output);
         var catalog = NarakaAppResIndex.Load(catalogPath);
         NarakaPrefabPackageCommand.PrepareMap(catalogPath, catalog);
+        var prefabRecords = NarakaPrefabPackageCommand.BuildPrefabRecordMap(catalog.Index.Records);
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         using var form = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new(-3000, -3000), Size = new(600, 750) };
         using var gl = new GLControl { Dock = DockStyle.Fill, APIVersion = new Version(3, 3), Profile = OpenTK.Windowing.Common.ContextProfile.Core };
@@ -95,7 +96,8 @@ internal static class PreviewExportLifecycleTests
             var beforePixels = Draw("before");
             try
             {
-                NarakaPrefabPackageCommand.Export(record, Path.Combine(output, Path.GetFileNameWithoutExtension(record.Name) + ".naraka"));
+                NarakaPrefabPackageCommand.Export(record,
+                    Path.Combine(output, Path.GetFileNameWithoutExtension(record.Name) + ".naraka"), prefabRecords);
                 Console.WriteLine("LIFECYCLE EXPORT PASS " + record.Name);
             }
             catch (Exception error)

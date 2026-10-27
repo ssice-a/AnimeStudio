@@ -114,6 +114,7 @@ namespace AnimeStudio.GUI
             endfieldSourceRefreshCancellation.Cancel();
             endfieldIndexCancellation.Cancel();
             endfieldPreviewCancellation.Cancel();
+            endfieldToolsCancellation.Cancel();
         }
 
         private CancellationTokenSource ReplaceEndfieldSourceRefreshCancellation()
@@ -202,6 +203,7 @@ namespace AnimeStudio.GUI
         private readonly SemaphoreSlim endfieldPreviewLock = new(1, 1);
         private CancellationTokenSource endfieldPreviewCancellation = new();
         private CancellationTokenSource endfieldIndexCancellation = new();
+        private CancellationTokenSource endfieldToolsCancellation = new();
         private CancellationTokenSource endfieldSourceRefreshCancellation = new();
         private Task endfieldSourceRefreshTask = Task.CompletedTask;
         private int endfieldSourceRefreshGeneration;
@@ -256,6 +258,10 @@ namespace AnimeStudio.GUI
                 async (_, _) => await ExportCheckedEndfieldAnimationsAsync());
             eiemMenu.DropDownItems.Add("Checked Prefabs as EFF effect sources...", null,
                 async (_, _) => await ExportCheckedEndfieldEffectsAsync());
+            eiemMenu.DropDownItems.Add(new ToolStripSeparator());
+            eiemMenu.DropDownItems.Add("Set shared tool storage folder...", null, (_, _) => SetEndfieldResourceRoot());
+            eiemMenu.DropDownItems.Add("Check / download shared EFF tools...", null,
+                async (_, _) => await PrepareEndfieldSharedToolsAsync());
             formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
 
             var narakaMenu = new ToolStripMenuItem("Naraka / 永劫无间");
@@ -649,14 +655,11 @@ namespace AnimeStudio.GUI
             try
             {
                 openEndfieldVfsToolStripMenuItem.Enabled = false;
-                endfieldIndexCancellation.Cancel();
-                endfieldIndexCancellation.Dispose();
-                endfieldIndexCancellation = new CancellationTokenSource();
+                endfieldIndexCancellation.Cancel();endfieldIndexCancellation.Dispose();endfieldIndexCancellation = new CancellationTokenSource();
                 StatusStripUpdate("Reading Endfield VFS metadata...");
                 var archive = await Task.Run(() => EndfieldVfsArchive.Open(vfsRoot));
                 var workspace = await SelectEndfieldWorkspace(archive);
-                if (workspace == null)
-                    return;
+                if (workspace == null) return;
                 var game = GameManager.GetGameByType(GameType.ArknightsEndfield);
 
                 var mapPath = await PrepareEndfieldIndex(archive, workspace, game);
@@ -2606,9 +2609,18 @@ namespace AnimeStudio.GUI
         {
             if (glControlLoaded && glControl.Visible)
             {
-                ChangeGLSize(glControl.Size);
                 glControl.Invalidate();
             }
+        }
+
+        private void glControl_Resize(object sender, EventArgs e)
+        {
+            if (!glControlLoaded || glControl.ClientSize.Width <= 0 || glControl.ClientSize.Height <= 0)
+                return;
+
+            glControl.MakeCurrent();
+            ChangeGLSize(glControl.ClientSize);
+            glControl.Invalidate();
         }
 
         private void PreviewAsset(AssetItem assetItem)
@@ -4065,6 +4077,7 @@ namespace AnimeStudio.GUI
             using var folder = new FolderBrowserDialog { Description = "Select Naraka Blender package output folder" };
             if (folder.ShowDialog(this) != DialogResult.OK) return;
             saveDirectoryBackup = folder.SelectedPath;
+            var narakaPrefabRecords = NarakaPrefabPackageCommand.BuildPrefabRecordMap(endfieldVirtualAssetRecords);
             await endfieldPreviewLock.WaitAsync();
             var completed = 0;
             var failed = new List<string>();
@@ -4078,7 +4091,7 @@ namespace AnimeStudio.GUI
                         Path.GetDirectoryName(relative) ?? "", Path.GetFileNameWithoutExtension(relative) + ".naraka"));
                     try
                     {
-                        await Task.Run(() => NarakaPrefabPackageCommand.Export(record, output));
+                        await Task.Run(() => NarakaPrefabPackageCommand.Export(record, output, narakaPrefabRecords));
                         completed++;
                     }
                     catch (Exception error)
@@ -5104,7 +5117,10 @@ namespace AnimeStudio.GUI
 
         private void ChangeGLSize(Size size)
         {
-            GL.Viewport(0, 0, size.Width, size.Height);
+            if (size.Width <= 0 || size.Height <= 0)
+                return;
+
+            NarakaPreviewCamera.SetViewport(size.Width, size.Height);
 
             if (size.Width <= size.Height)
             {
@@ -5127,6 +5143,7 @@ namespace AnimeStudio.GUI
         private void glControl_Paint(object sender, PaintEventArgs e)
         {
             glControl.MakeCurrent();
+            ChangeGLSize(glControl.ClientSize);
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             GL.Enable(EnableCap.DepthTest);
             GL.DepthFunc(DepthFunction.Lequal);

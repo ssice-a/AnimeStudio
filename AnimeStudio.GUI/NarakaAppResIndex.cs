@@ -141,9 +141,12 @@ namespace AnimeStudio.GUI
                 Encoding.UTF8.GetBytes(root.ToUpperInvariant())))[..16];
             var info = new FileInfo(fullCatalogPath);
             var fingerprint = $"{info.Length:X16}:{info.LastWriteTimeUtc.Ticks:X16}";
+            // Previous paged readers cached incomplete CAB maps when metadata
+            // padding crossed a page. Keep those files, but rebuild with the
+            // physical block-layout validator before reusing dependencies.
             var cacheDirectory = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "AnimeStudio", "Indexes", "Naraka", rootHash);
+                "AnimeStudio", "Indexes", "Naraka", rootHash, "paged-layout-v3");
             return (Path.Combine(cacheDirectory, "cabmap.bin"),
                 Path.Combine(cacheDirectory, "catalog.fingerprint"), fingerprint);
         }

@@ -62,7 +62,7 @@ internal static class EndfieldIndexUpdates
         }
         if (!string.IsNullOrEmpty(result.ToolUrl)) Https(result.ToolUrl);return result;
     }
-    internal static string CachedPackage(IndexDownload index) => Path.Combine(EndfieldSharedIndexes.Root, "downloads",
+    internal static string CachedPackage(IndexDownload index, string workspace) => Path.Combine(Path.GetFullPath(workspace), ".eff-index-downloads",
         index.Release.GameContent[21..], index.Release.Sha256.ToUpperInvariant() + ".effindex.gz");
 
     internal static async Task Download(IndexDownload index, string destination, IProgress<string> progress, CancellationToken token, HttpClient client = null)

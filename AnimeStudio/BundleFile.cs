@@ -989,6 +989,8 @@ namespace AnimeStudio
                             blocksInfoUncompresseddStream = DecompressNarakaBlocksInfo(
                                 blocksInfoBytes,
                                 checked((int)uncompressedSize),
+                                narakaBlocksInfoStart,
+                                reader.Length,
                                 out narakaBlocksInfoPayloadSize);
                             break;
                         }
@@ -1093,6 +1095,8 @@ namespace AnimeStudio
         private MemoryStream DecompressNarakaBlocksInfo(
             byte[] compressedBytes,
             int outputCapacity,
+            long blocksInfoStart,
+            long bundleEnd,
             out int compressedPayloadSize)
         {
             compressedPayloadSize = 0;
@@ -1114,7 +1118,8 @@ namespace AnimeStudio
                     var numWrite = LZ4.Instance.Decompress(
                         compressedBytes.AsSpan(0, compressedSize),
                         uncompressedBytes);
-                    if (!LooksLikeNarakaBlocksInfo(uncompressedBytes.AsSpan(0, numWrite)))
+                    var dataStart = (blocksInfoStart + compressedSize + 0xFFF) & ~0xFFFL;
+                    if (!LooksLikeNarakaBlocksInfo(uncompressedBytes.AsSpan(0, numWrite), dataStart, bundleEnd))
                     {
                         return false;
                     }
@@ -1160,7 +1165,7 @@ namespace AnimeStudio
             throw new InvalidDataException("Unable to locate Naraka blocks-info payload");
         }
 
-        private bool LooksLikeNarakaBlocksInfo(ReadOnlySpan<byte> data)
+        private bool LooksLikeNarakaBlocksInfo(ReadOnlySpan<byte> data, long dataStart, long bundleEnd)
         {
             try
             {
@@ -1172,16 +1177,28 @@ namespace AnimeStudio
                 }
 
                 ulong totalBlockSize = 0;
+                var physicalEnd = dataStart;
                 for (var i = 0; i < blocksCount; i++)
                 {
                     totalBlockSize += ReadUInt32BigEndian(data, ref position);
-                    _ = ReadUInt32BigEndian(data, ref position);
+                    var compressedSize = ReadUInt32BigEndian(data, ref position);
                     var flags = ReadUInt16BigEndian(data, ref position);
                     var compression = flags & (ushort)StorageBlockFlags.CompressionTypeMask;
                     if (compression != 0 && compression != 6 && compression != 8)
                     {
                         return false;
                     }
+                    // Private metadata padding may itself decode as LZ4 and
+                    // preserve a valid directory prefix. If it crosses a page,
+                    // accepting that prefix shifts every data block by 4 KiB.
+                    // Validate the complete physical layout before committing
+                    // to a candidate boundary; both eager and lazy reads use it.
+                    physicalEnd = (physicalEnd + 0xFFF) & ~0xFFFL;
+                    if (physicalEnd > bundleEnd || compressedSize > bundleEnd - physicalEnd)
+                    {
+                        return false;
+                    }
+                    physicalEnd += compressedSize;
                 }
 
                 var nodesCount = ReadInt32BigEndian(data, ref position);

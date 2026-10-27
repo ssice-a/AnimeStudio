@@ -12,7 +12,8 @@ internal static class NarakaBoneSourceTests
         NarakaPrefabPackageCommand.PrepareMap(catalogPath, catalog);
         var path = "assets/res/prefab/actor_visual_part/ch_f_ming_wuzhen/ch_f_ming_wuzhen_lv_s3_billboard.prefab";
         var record = catalog.Index.Records.Single(r => r.Container == path);
-        NarakaPrefabPackageCommand.Export(record, output);
+        NarakaPrefabPackageCommand.Export(record, output,
+            NarakaPrefabPackageCommand.BuildPrefabRecordMap(catalog.Index.Records));
         var document = JObject.Parse(File.ReadAllText(Path.Combine(output, "naraka.json")));
         var nodes = (JArray)document["nodes"]!;
         var renderers = (JArray)document["renderers"]!;

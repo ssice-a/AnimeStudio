@@ -1,4 +1,5 @@
 dist/*
+.release-worktrees/
 .vscode/
 saved_transformation_options.xml
 

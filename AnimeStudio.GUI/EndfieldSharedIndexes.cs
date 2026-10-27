@@ -17,19 +17,25 @@ internal static class EndfieldSharedIndexes
     private sealed record Registry(string Format, Entry[] Entries);
     private const string Format = "EFF_SHARED_INDEXES/1";
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
-    internal static string Root => Path.GetFullPath(Environment.GetEnvironmentVariable("EFF_RESOURCE_ROOT") is { Length: > 0 } configured
-        ? configured : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EFF", "Resources"));
+    internal static string Root => EndfieldSharedResources.MetadataRoot;
     internal static string Game(EndfieldVfsArchive archive) => archive.GameDirectory ?? archive.VfsRoot;
     private static string Normalize(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)).Replace('\\', '/').ToLowerInvariant();
 
     private static Entry[] Read()
     {
-        try
+        var entries = new List<Entry>();
+        var roots = new[] { Root, EndfieldSharedResources.ResourceRoot }
+            .Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in roots)
         {
-            var registry = JsonSerializer.Deserialize<Registry>(File.ReadAllText(Path.Combine(Root, "registry.json")), Json);
-            return registry?.Format == Format && registry.Entries != null ? registry.Entries : Array.Empty<Entry>();
+            try
+            {
+                var registry = JsonSerializer.Deserialize<Registry>(File.ReadAllText(Path.Combine(root, "registry.json")), Json);
+                if (registry?.Format == Format && registry.Entries != null) entries.AddRange(registry.Entries);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { }
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return Array.Empty<Entry>(); }
+        return entries.ToArray();
     }
 
     internal static IEnumerable<string> Workspaces(string game)
@@ -48,12 +54,19 @@ internal static class EndfieldSharedIndexes
         }
     }
 
-    internal static string DefaultWorkspace(string game) => Path.Combine(Root, "installations",
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Normalize(game))))[..24], "workspace");
+    internal static string DefaultWorkspace(string game)
+    {
+        var resourceRoot = EndfieldSharedResources.ResourceRoot;
+        return string.IsNullOrEmpty(resourceRoot) ? string.Empty : Path.Combine(resourceRoot, "indexes", "installations",
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Normalize(game))))[..24], "workspace");
+    }
 
     internal static string FindCurrent(EndfieldVfsArchive archive, CancellationToken token, params string[] additional)
     {
-        foreach (var workspace in Workspaces(Game(archive)).Concat(additional).Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase))
+        var selectedWorkspace = WorkspacePath(EndfieldSharedResources.IndexWorkspace);
+        var selected = string.IsNullOrWhiteSpace(selectedWorkspace) ? Array.Empty<string>() : new[] { selectedWorkspace };
+        foreach (var workspace in selected.Concat(Workspaces(Game(archive))).Concat(additional)
+            .Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             token.ThrowIfCancellationRequested();
             try
@@ -63,6 +76,17 @@ internal static class EndfieldSharedIndexes
             catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException) { }
         }
         return null;
+    }
+
+    internal static string WorkspacePath(string location)
+    {
+        if (string.IsNullOrWhiteSpace(location)) return string.Empty;
+        var path = Path.GetFullPath(location);
+        if (File.Exists(path) && string.Equals(Path.GetFileName(path), "endfield_assets.eidx", StringComparison.OrdinalIgnoreCase))
+            return Directory.GetParent(path)?.Parent?.FullName ?? string.Empty;
+        if (string.Equals(Path.GetFileName(Path.TrimEndingDirectorySeparator(path)), "index", StringComparison.OrdinalIgnoreCase))
+            return Directory.GetParent(path)?.FullName ?? string.Empty;
+        return path;
     }
 
     internal static void Remember(EndfieldVfsArchive archive, string workspace, CancellationToken token = default)
@@ -79,6 +103,8 @@ internal static class EndfieldSharedIndexes
         {
             File.WriteAllText(temp, JsonSerializer.Serialize(new Registry(Format, entries.ToArray()), Json));
             token.ThrowIfCancellationRequested();File.Move(temp, path, true);
+            try { EndfieldSharedResources.SetIndexWorkspace(workspace); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { }
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }

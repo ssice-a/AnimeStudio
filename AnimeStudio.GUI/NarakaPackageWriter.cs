@@ -1,5 +1,6 @@
 using AnimeStudio;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -13,29 +14,39 @@ namespace AnimeStudio.GUI;
 
 internal sealed class NarakaPackageWriter
 {
-    private readonly NarakaPrefabLoader loader;
-    private readonly Dictionary<string, string> logicalPaths = new(StringComparer.Ordinal);
+    private NarakaPrefabLoader loader;
+    private Dictionary<string, string> logicalPaths = new(StringComparer.Ordinal);
     private readonly Dictionary<Transform, int> nodeIds = new();
     private readonly Dictionary<string, string> payloads = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, object> materials = new();
     private readonly Dictionary<string, object> textures = new();
     private readonly List<object> nodes = new();
     private readonly List<object> renderers = new();
+    private readonly List<object> effectRenderers = new();
+    private readonly List<object> effectMeshes = new();
+    private readonly List<object> effects = new();
+    private readonly List<object> particleSystems = new();
     private readonly List<object> lodGroups = new();
     private readonly Dictionary<string, object> shaderProperties = new();
     private readonly List<string> warnings = new();
-    private readonly NarakaModelBones modelBones;
+    private NarakaModelBones modelBones;
     private string directory;
 
     internal NarakaPackageWriter(NarakaPrefabLoader loader)
     {
-        this.loader = loader;
-        modelBones = new NarakaModelBones(loader);
-        foreach (var file in loader.Manager.assetsFileList)
+        UseLoader(loader);
+    }
+
+    private void UseLoader(NarakaPrefabLoader current)
+    {
+        loader = current;
+        modelBones = new NarakaModelBones(current);
+        logicalPaths = new(StringComparer.Ordinal);
+        foreach (var file in current.Manager.assetsFileList)
         foreach (var info in file.m_Objects.Where(o => o.classID == (int)ClassIDType.AssetBundle))
         {
             var bundlePointer = new PPtr<AssetBundle>(0, info.m_PathID, file);
-            foreach (var entry in loader.Require(bundlePointer, file).m_Container)
+            foreach (var entry in current.Require(bundlePointer, file).m_Container)
             {
                 var reference = entry.Value.asset;
                 var cab = reference.m_FileID == 0 ? file.fileName : file.m_Externals[reference.m_FileID - 1].fileName;
@@ -50,24 +61,33 @@ internal sealed class NarakaPackageWriter
         EiemPackageIdentity.PayloadFileName(folder, asset.Name.Length > 0 ? asset.Name : asset.type.ToString(),
             asset.assetsFile.fileName, asset.m_PathID, extension, payloads).Replace('\\', '/');
 
-    internal void Write(string container, GameObject root, string output)
+    internal void Write(string container, GameObject root,
+        IReadOnlyList<NarakaPrefabPackageCommand.EffectPrefab> effectPrefabs,
+        IReadOnlyList<string> referenceWarnings, string output)
     {
         EiemPackagePublication.Publish(output, staging =>
         {
             directory = staging;
-            foreach (var folder in new[] { "meshes", "textures", "materials", "source" }) Directory.CreateDirectory(Path.Combine(staging, folder));
+            foreach (var folder in new[] { "meshes", "textures", "materials", "effects/meshes", "source/effects" })
+                Directory.CreateDirectory(Path.Combine(staging, folder));
+            warnings.AddRange(referenceWarnings);
+            UseLoader(loader);
             Collect(root.m_Transform, -1, "");
             foreach (var gameObject in EndfieldPrefabDocument.GetHierarchy(root))
             foreach (var pointer in gameObject.m_Components)
                 if (loader.Resolve(pointer, gameObject.assetsFile) is Renderer renderer && renderer is MeshRenderer or SkinnedMeshRenderer)
-                    WriteRenderer(gameObject, renderer);
+                    WriteRenderer(gameObject, renderer, renderers, "meshes", null);
             if (renderers.Count == 0) throw new InvalidDataException("The Prefab has no mesh renderers");
+
+            foreach (var effect in effectPrefabs)
+                WriteEffectPrefab(effect);
+
             var manifest = new
             {
                 format = "NARAKA_PREFAB_PACKAGE", version = 1, coordinate = "unity-y-up-left-handed",
                 prefab = container, source = Identity(root), name = root.Name,
-                nodes, renderers, lodGroups, materials, textures, warnings,
-                scope = "All MeshRenderer/SkinnedMeshRenderer instances beneath this Prefab, including inactive nodes, plus verified original FBX skeleton ancestors. Runtime-created renderers are outside this graph.",
+                nodes, renderers, effectRenderers, effectMeshes, effects, particleSystems, lodGroups, materials, textures, warnings,
+                scope = "All outfit MeshRenderer/SkinnedMeshRenderer instances and statically referenced effect Prefabs, components, meshes, materials and textures. Runtime-created or script-selected resources outside PrefabLoader paths are not included.",
             };
             var json = JsonConvert.SerializeObject(manifest, Formatting.Indented);
             File.WriteAllText(Path.Combine(staging, "naraka.json"), json);
@@ -119,7 +139,8 @@ internal sealed class NarakaPackageWriter
         }
     }
 
-    private void WriteRenderer(GameObject gameObject, Renderer renderer)
+    private object WriteRenderer(GameObject gameObject, Renderer renderer, List<object> destination,
+        string meshFolder, string effectPrefab)
     {
         var skin = renderer as SkinnedMeshRenderer;
         var mesh = loader.RendererMesh(gameObject, renderer);
@@ -147,7 +168,7 @@ internal sealed class NarakaPackageWriter
             throw new InvalidDataException($"Bone palette/bindpose mismatch on {gameObject.Name}: bones={palette.Count}, bindposes={mesh.m_BindPose?.Length}, hashes={mesh.m_BoneNameHashes?.Length}, renderer={Identity(renderer)}, mesh={Identity(mesh)}");
         if (skin != null && palette.Count == 0 && mesh.m_BindPose?.Length > 0)
             warnings.Add($"{gameObject.Name}: No unique original FBX skeleton matches the exact source mesh and all bone hashes. Bindposes and original hashes retained; bone names/parents unresolved.");
-        var meshPath = EiemPackageIdentity.PayloadFileName("meshes", gameObject.Name,
+        var meshPath = EiemPackageIdentity.PayloadFileName(meshFolder, gameObject.Name,
             renderer.assetsFile.fileName, renderer.m_PathID, ".mesh", payloads).Replace('\\', '/');
         EiemPackageWriter.WriteMeshPayload(Path.Combine(directory, meshPath), mesh,
             Logical(mesh).Length > 0 ? Logical(mesh) : Identity(mesh), palette.Select(n => n.ToString()).ToArray());
@@ -166,12 +187,284 @@ internal sealed class NarakaPackageWriter
         }
         var data = NarakaPrefabLoader.Fields(renderer);
         var enabled = data == null || !data.Contains("m_Enabled") || Convert.ToBoolean(data["m_Enabled"]);
-        renderers.Add(new { id = Identity(renderer), name = gameObject.Name, node = nodeIds[gameObject.m_Transform],
+        var row = new { id = Identity(renderer), name = gameObject.Name, node = nodeIds[gameObject.m_Transform],
             mesh = meshPath, meshSource = Identity(mesh), meshName = mesh.Name, enabled, skinned = skin != null,
             bones = palette, boneSource, materialSlots = slots, blendShapeWeights = skin?.m_BlendShapeWeights ?? Array.Empty<float>(),
+            effectPrefab,
             submeshSlots = Enumerable.Range(0, slots.Count).Select(i => renderer.m_SubsetIndices?.Length > i
                 ? checked((int)renderer.m_SubsetIndices[i]) : renderer.m_StaticBatchInfo?.subMeshCount > i
-                    ? renderer.m_StaticBatchInfo.firstSubMesh + i : i).ToArray() });
+                    ? renderer.m_StaticBatchInfo.firstSubMesh + i : i).ToArray() };
+        destination.Add(row);
+        return row;
+    }
+
+    private void WriteEffectPrefab(NarakaPrefabPackageCommand.EffectPrefab effect)
+    {
+        var mounts = effect.Mounts.Select(mount => new
+        {
+            node = nodeIds[mount.Owner.m_Transform],
+            parentPrefab = mount.ParentPrefab,
+            path = mount.Path,
+            anchor = mount.Owner.Name,
+        }).ToArray();
+        var parentNode = effect.Mounts.Count > 0 ? nodeIds[effect.Mounts[0].Owner.m_Transform] : -1;
+        WriteEffectResources(effect.Container, effect.Loader, effect.Root, mounts, parentNode, collectHierarchy: true);
+    }
+
+    private void WriteEffectResources(string prefabPath, NarakaPrefabLoader prefabLoader,
+        GameObject effectRoot, object[] mounts, int parentNode, bool collectHierarchy)
+    {
+        UseLoader(prefabLoader);
+        var rootNode = nodeIds.GetValueOrDefault(effectRoot.m_Transform, -1);
+        if (collectHierarchy)
+        {
+            Collect(effectRoot.m_Transform, parentNode, "effect/" + prefabPath);
+            rootNode = nodeIds[effectRoot.m_Transform];
+        }
+        if (rootNode < 0) throw new InvalidDataException("Effect Prefab root is not in the exported hierarchy: " + prefabPath);
+
+        var gameObjects = EndfieldPrefabDocument.GetHierarchy(effectRoot);
+        var rendererMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var gameObject in gameObjects)
+        foreach (var pointer in gameObject.m_Components)
+            if (loader.Resolve(pointer, gameObject.assetsFile) is Renderer renderer && renderer is MeshRenderer or SkinnedMeshRenderer)
+                rendererMeshes.Add(Identity(loader.RendererMesh(gameObject, renderer)));
+
+        var componentSnapshots = new List<EffectComponentSnapshot>();
+        var effectRendererRows = new List<object>();
+        var effectMeshRows = new Dictionary<string, EffectMeshRow>(StringComparer.OrdinalIgnoreCase);
+        var materialIds = new HashSet<string>(StringComparer.Ordinal);
+        var textureIds = new HashSet<string>(StringComparer.Ordinal);
+        var resourceReferences = new List<object>();
+
+        foreach (var gameObject in gameObjects)
+        {
+            var nodeId = nodeIds[gameObject.m_Transform];
+            var currentComponents = new List<EffectComponentSnapshot>();
+            foreach (var pointer in gameObject.m_Components)
+            {
+                var component = loader.Resolve(pointer.Cast<AssetObject>(), gameObject.assetsFile);
+                if (component == null) continue;
+                var componentType = component.type;
+                var className = componentType == ClassIDType.MonoBehaviour ? loader.ScriptClassName(component) : null;
+                var fields = NarakaPrefabLoader.Fields(component);
+                var references = loader.ReferencedResources(component);
+                var snapshot = new EffectComponentSnapshot(component, gameObject, nodeId, componentType,
+                    className, fields, references);
+                currentComponents.Add(snapshot);
+                componentSnapshots.Add(snapshot);
+
+                var componentMaterials = references.Where(x => x.Asset is Material)
+                    .Select(x => (Material)x.Asset).DistinctBy(Identity).ToArray();
+                var componentMaterialIds = new List<string>();
+                foreach (var material in componentMaterials)
+                {
+                    var id = WriteMaterial(material);
+                    componentMaterialIds.Add(id);
+                    materialIds.Add(id);
+                    CollectMaterialTextures(material, textureIds);
+                }
+
+                foreach (var reference in references)
+                {
+                    var asset = reference.Asset;
+                    switch (asset.type)
+                    {
+                        case ClassIDType.Mesh when asset is Mesh mesh:
+                            if (!rendererMeshes.Contains(Identity(mesh)))
+                                AddEffectMesh(effectMeshRows, prefabPath, gameObject, mesh,
+                                    componentType + ":" + reference.FieldPath, componentMaterialIds);
+                            break;
+                        case ClassIDType.Texture2D when asset is Texture2D texture:
+                            textureIds.Add(WriteTexture(texture));
+                            break;
+                        case ClassIDType.Texture2DArray:
+                            try { textureIds.Add(WriteTextureArray(asset)); }
+                            catch (Exception error) when (error is NotSupportedException or InvalidDataException)
+                            {
+                                warnings.Add($"{prefabPath}:{gameObject.Name}:{reference.FieldPath}: texture array export failed: {error.Message}");
+                            }
+                            break;
+                    }
+                    resourceReferences.Add(new
+                    {
+                        effectPrefab = prefabPath,
+                        component = Identity(component),
+                        componentType = componentType.ToString(),
+                        field = reference.FieldPath,
+                        type = asset.type.ToString(),
+                        source = Identity(asset),
+                        name = asset.Name,
+                        logicalPath = Logical(asset),
+                    });
+                }
+
+                if (component is Renderer renderer && renderer is MeshRenderer or SkinnedMeshRenderer)
+                {
+                    var row = WriteRenderer(gameObject, renderer, effectRendererRows, "effects/meshes", prefabPath);
+                    foreach (var slot in renderer.m_Materials)
+                        if (loader.Resolve(slot, renderer.assetsFile) is Material material)
+                        {
+                            materialIds.Add(WriteMaterial(material));
+                            CollectMaterialTextures(material, textureIds);
+                        }
+                }
+            }
+
+            var particleRenderer = currentComponents.FirstOrDefault(x => x.Type == ClassIDType.ParticleSystemRenderer);
+            foreach (var particleSystem in currentComponents.Where(x => x.Type == ClassIDType.ParticleSystem))
+            {
+                var rendererFields = particleRenderer?.Fields;
+                var rawMode = rendererFields != null && rendererFields.Contains("m_RenderMode")
+                    ? Convert.ToInt32(rendererFields["m_RenderMode"]) : -1;
+                var particleMaterials = particleRenderer?.References.Where(x => x.Asset is Material)
+                    .Select(x => Identity(x.Asset)).Distinct(StringComparer.Ordinal).ToArray() ?? Array.Empty<string>();
+                var particleMeshes = particleSystem.References.Concat(particleRenderer?.References ?? Array.Empty<(AssetObject, string)>())
+                    .Where(x => x.Asset.type == ClassIDType.Mesh).Select(x => Identity(x.Asset))
+                    .Distinct(StringComparer.Ordinal).ToArray();
+                var particleTextures = particleSystem.References.Concat(particleRenderer?.References ?? Array.Empty<(AssetObject, string)>())
+                    .Where(x => x.Asset.type is ClassIDType.Texture2D or ClassIDType.Texture2DArray)
+                    .Select(x => Identity(x.Asset)).Concat(particleMaterials.SelectMany(MaterialTextureIdentities))
+                    .Distinct(StringComparer.Ordinal).ToArray();
+                particleSystems.Add(new
+                {
+                    source = Identity(particleSystem.Component),
+                    name = particleSystem.Owner.Name,
+                    node = particleSystem.Node,
+                    prefab = prefabPath,
+                    lengthInSec = particleSystem.Fields?["lengthInSec"],
+                    looping = particleSystem.Fields?["looping"],
+                    playOnAwake = particleSystem.Fields?["playOnAwake"],
+                    renderMode = rawMode,
+                    renderModeName = ParticleRenderModeName(rawMode),
+                    meshes = particleMeshes,
+                    materials = particleMaterials,
+                    textures = particleTextures,
+                });
+            }
+        }
+
+        var componentFile = FileName("source/effects", effectRoot, ".components.json");
+        var componentPath = Path.Combine(directory, componentFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(componentPath)!);
+        File.WriteAllText(componentPath, JsonConvert.SerializeObject(new
+        {
+            format = "NARAKA_EFFECT_COMPONENTS",
+            prefab = prefabPath,
+            components = componentSnapshots.Select(snapshot => new
+            {
+                id = Identity(snapshot.Component),
+                type = snapshot.Type.ToString(),
+                scriptClass = snapshot.ScriptClass,
+                name = snapshot.Owner.Name,
+                node = snapshot.Node,
+                fields = snapshot.Fields,
+            }),
+            references = resourceReferences,
+        }, Formatting.Indented));
+
+        foreach (var row in effectMeshRows.Values) effectMeshes.Add(row);
+        effects.Add(new
+        {
+            prefab = prefabPath,
+            source = Identity(effectRoot),
+            rootNode,
+            embedded = !collectHierarchy,
+            mounts,
+            renderers = effectRendererRows,
+            meshes = effectMeshRows.Keys.ToArray(),
+            materials = materialIds.ToArray(),
+            textures = textureIds.ToArray(),
+            components = componentFile,
+        });
+        effectRenderers.AddRange(effectRendererRows);
+    }
+
+    private void AddEffectMesh(Dictionary<string, EffectMeshRow> rows, string prefabPath,
+        GameObject owner, Mesh mesh, string use, IReadOnlyList<string> materialSlots)
+    {
+        var id = Identity(mesh);
+        if (!rows.TryGetValue(id, out var row))
+        {
+            if (mesh.m_VertexCount == 0)
+            {
+                warnings.Add($"{prefabPath}:{mesh.Name}: referenced effect Mesh has no vertices");
+                return;
+            }
+            var meshPath = EiemPackageIdentity.PayloadFileName("effects/meshes", mesh.Name,
+                mesh.assetsFile.fileName, mesh.m_PathID, ".mesh", payloads).Replace('\\', '/');
+            EiemPackageWriter.WriteMeshPayload(Path.Combine(directory, meshPath), mesh,
+                Logical(mesh).Length > 0 ? Logical(mesh) : id, Array.Empty<string>());
+            EiemPackageValidator.ValidateMesh(Path.Combine(directory, meshPath));
+            row = new EffectMeshRow
+            {
+                id = id,
+                name = owner.Name + " / " + mesh.Name,
+                sourceName = mesh.Name,
+                source = id,
+                logicalPath = Logical(mesh),
+                node = nodeIds[owner.m_Transform],
+                mesh = meshPath,
+                materialSlots = materialSlots.ToList(),
+                effectPrefab = prefabPath,
+            };
+            rows.Add(id, row);
+        }
+        if (!row.uses.Contains(use, StringComparer.Ordinal)) row.uses.Add(use);
+        foreach (var material in materialSlots)
+            if (material != null && !row.materialSlots.Contains(material, StringComparer.Ordinal)) row.materialSlots.Add(material);
+    }
+
+    private void CollectMaterialTextures(Material material, ISet<string> textureIds)
+    {
+        foreach (var textureEnvironment in material.m_SavedProperties.m_TexEnvs)
+        {
+            var texture = loader.Resolve(textureEnvironment.Value.m_Texture.Cast<AssetObject>(), material.assetsFile);
+            if (texture is Texture2D pixels) textureIds.Add(WriteTexture(pixels));
+            else if (texture?.type == ClassIDType.Texture2DArray)
+            {
+                try { textureIds.Add(WriteTextureArray(texture)); }
+                catch (NotSupportedException error) { warnings.Add($"{material.Name}:{textureEnvironment.Key}: {error.Message}"); }
+            }
+        }
+    }
+
+    private IEnumerable<string> MaterialTextureIdentities(string materialId)
+    {
+        if (!materials.TryGetValue(materialId, out var value)) yield break;
+        var json = JObject.FromObject(value);
+        if (json["textures"] is not JObject bindings) yield break;
+        foreach (var binding in bindings.Properties())
+            if (binding.Value["source"]?.Type == JTokenType.String)
+                yield return binding.Value["source"]!.Value<string>();
+    }
+
+    private static string ParticleRenderModeName(int mode) => mode switch
+    {
+        0 => "Billboard",
+        1 => "Stretch",
+        2 => "HorizontalBillboard",
+        3 => "VerticalBillboard",
+        4 => "Mesh",
+        _ => "Unknown",
+    };
+
+    private sealed record EffectComponentSnapshot(AssetObject Component, GameObject Owner, int Node,
+        ClassIDType Type, string ScriptClass, OrderedDictionary Fields,
+        IReadOnlyList<(AssetObject Asset, string FieldPath)> References);
+
+    private sealed class EffectMeshRow
+    {
+        public string id { get; init; }
+        public string name { get; init; }
+        public string sourceName { get; init; }
+        public string source { get; init; }
+        public string logicalPath { get; init; }
+        public int node { get; init; }
+        public string mesh { get; init; }
+        public List<string> materialSlots { get; init; } = new();
+        public string effectPrefab { get; init; }
+        public List<string> uses { get; } = new();
     }
 
     private int CollectBone(Transform transform, string container, IReadOnlyDictionary<Transform, string> paths, HashSet<Transform> visiting)

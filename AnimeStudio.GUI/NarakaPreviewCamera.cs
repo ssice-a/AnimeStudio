@@ -1,10 +1,17 @@
 using System;
+using OpenTK.Graphics.OpenGL;
 using OpenTK.Mathematics;
 
 namespace AnimeStudio.GUI;
 
 internal static class NarakaPreviewCamera
 {
+    internal static void SetViewport(int width, int height)
+    {
+        if (width > 0 && height > 0)
+            GL.Viewport(0, 0, width, height);
+    }
+
     // Converted geometry uses GL CCW front faces and a camera looking down -Z.
     // Camera-space +Z is nearer; GL depth must decrease toward that surface.
     // A positive Z scale makes the opposite/inside surface win the depth test.

@@ -66,24 +66,82 @@ internal static class IndexDistributionTests
             using var missingHandler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)));
             using var missingClient = new HttpClient(missingHandler);
             Check(await EndfieldIndexUpdates.Check("https://example.test/catalog", CancellationToken.None, missingClient) == null, "Unpublished catalog should be optional");
+            SharedToolsCache();
             Console.WriteLine("PASS shared catalog/download: GitHub and direct catalogs, cache reuse, corrupt-cache replacement, SHA/size/HTTPS validation, cancellation and failed-publication preservation");
         }
         finally { Directory.Delete(root, true); }
     }
 
+    private static void SharedToolsCache()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "eff-shared-tools-cache-" + Guid.NewGuid().ToString("N"));
+        var originalRoot = Environment.GetEnvironmentVariable("EFF_RESOURCE_ROOT");
+        var originalLocal = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        try
+        {
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", Path.Combine(root, "local"));
+            Environment.SetEnvironmentVariable("EFF_RESOURCE_ROOT", null);
+            EndfieldSharedResources.SetResourceRoot(root);
+            var digest = new string('a', 64);
+            var package = Path.Combine(root, "tools", digest);
+            var native = Path.Combine(package, "nativepack");
+            Directory.CreateDirectory(native);
+            Directory.CreateDirectory(Path.Combine(package, "vendor", "PIL"));
+            foreach (var name in new[] { "eff_resource_pack.exe", "eff_source_index.exe", "eff_author_core.dll", "package-protocol.json" })
+                File.WriteAllText(Path.Combine(native, name), "fixture");
+            File.WriteAllText(Path.Combine(package, "vendor", "PIL", "__init__.py"), "");
+            File.WriteAllBytes(Path.Combine(package, "vendor", "PIL", "_imaging.cp311-win_amd64.pyd"), []);
+            File.WriteAllBytes(Path.Combine(package, "vendor", "PIL", "_imaging.cp313-win_amd64.pyd"), []);
+            File.WriteAllText(Path.Combine(root, "tools", "current.json"), JsonSerializer.Serialize(new
+            {
+                format = "EFF_SHARED_NATIVE_TOOLS_INSTALL/1",
+                sha256 = digest,
+                release = "fixture"
+            }));
+            Check(EndfieldSharedNativeTools.FindInstalledCompiler(root) == Path.Combine(native, "eff_resource_pack.exe"),
+                "AnimeStudio did not discover tools installed by another client");
+            Check(EndfieldSharedResources.ResourceRoot == Path.GetFullPath(root), "Shared selected root was not persisted");
+            Check(Environment.GetEnvironmentVariable("EFF_RESOURCE_ROOT") is null,
+                "Selecting a shared resource root must not pin a process-local override");
+            Console.WriteLine("PASS shared tool cache: resource root and current.json package layout are reusable across clients");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EFF_RESOURCE_ROOT", originalRoot);
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", originalLocal);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     internal static void Registry(EndfieldVfsArchive archive, string workspace, EndfieldVfsArchive other, string otherWorkspace)
     {
         var root = Path.Combine(Path.GetTempPath(), "eff-index-registry-" + Guid.NewGuid().ToString("N"));
-        var original = Environment.GetEnvironmentVariable("EFF_RESOURCE_ROOT");Environment.SetEnvironmentVariable("EFF_RESOURCE_ROOT", root);
+        var original = Environment.GetEnvironmentVariable("EFF_RESOURCE_ROOT");
+        var originalLocalAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+        Environment.SetEnvironmentVariable("EFF_RESOURCE_ROOT", root);
+        Environment.SetEnvironmentVariable("LOCALAPPDATA", Path.Combine(root, "metadata"));
         try
         {
+            void ClearSelectedWorkspace()
+            {
+                Directory.CreateDirectory(EndfieldSharedResources.MetadataRoot);
+                File.WriteAllText(EndfieldSharedResources.SettingsPath, JsonSerializer.Serialize(new
+                {
+                    format = "EFF_SHARED_RESOURCES/1",
+                    resourceRoot = root,
+                    indexWorkspace = ""
+                }));
+            }
+
             EndfieldSharedIndexes.Remember(archive, workspace);
             EndfieldSharedIndexes.Remember(archive, workspace);
+            ClearSelectedWorkspace();
             Check(EndfieldSharedIndexes.Workspaces(EndfieldSharedIndexes.Game(archive)).Single() == workspace, "Duplicate registry location");
             Check(!Directory.Exists(EndfieldSharedIndexes.DefaultWorkspace(EndfieldSharedIndexes.Game(archive))), "Registration copied an existing index");
             Check(EndfieldSharedIndexes.FindCurrent(archive, CancellationToken.None) == workspace, "Existing workspace not reusable");
             Check(EndfieldSharedIndexes.FindCurrent(other, CancellationToken.None) == null, "Registry crossed installation boundaries");
             EndfieldSharedIndexes.Remember(other, otherWorkspace);
+            ClearSelectedWorkspace();
             Check(EndfieldSharedIndexes.FindCurrent(other, CancellationToken.None) == otherWorkspace && EndfieldSharedIndexes.FindCurrent(archive, CancellationToken.None) == workspace,
                 "Registering another game lost existing location");
             Check(EndfieldSharedIndexes.DefaultWorkspace(EndfieldSharedIndexes.Game(archive)) != EndfieldSharedIndexes.DefaultWorkspace(EndfieldSharedIndexes.Game(other)), "New workspaces collide across games");
@@ -92,7 +150,7 @@ internal static class IndexDistributionTests
             {
                 canceled.Cancel();try { EndfieldSharedIndexes.Remember(archive, workspace, canceled.Token);throw new Exception("Canceled registration committed"); } catch (OperationCanceledException) { }
             }
-            var registry = Path.Combine(root, "registry.json");
+            var registry = Path.Combine(root, "metadata", "EFF", "Resources", "registry.json");
             File.WriteAllText(registry, JsonSerializer.Serialize(new { format = "EFF_SHARED_INDEXES/1", entries = new[] {
                 new { game = EndfieldSharedIndexes.Game(archive), workspace = Path.Combine(root, "missing") },
                 new { game = EndfieldSharedIndexes.Game(archive), workspace } } }));
@@ -102,6 +160,11 @@ internal static class IndexDistributionTests
                 EndfieldSharedIndexes.FindCurrent(archive, CancellationToken.None, workspace) == workspace, "Broken registry prevented explicit legacy-workspace reuse");
             Console.WriteLine("PASS shared registry: zero-copy reuse, installation isolation, duplicate/current validation, cancellation, stale-entry and malformed-file fallback");
         }
-        finally { Environment.SetEnvironmentVariable("EFF_RESOURCE_ROOT", original);if (Directory.Exists(root)) Directory.Delete(root, true); }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EFF_RESOURCE_ROOT", original);
+            Environment.SetEnvironmentVariable("LOCALAPPDATA", originalLocalAppData);
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
     }
 }

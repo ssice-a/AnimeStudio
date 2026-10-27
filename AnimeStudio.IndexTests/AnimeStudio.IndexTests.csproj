@@ -12,6 +12,8 @@
     <Compile Include="../AnimeStudio.GUI/EndfieldVfsAssetIndexBuilder.cs" Link="EndfieldVfsAssetIndexBuilder.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldIndexWorkspace.cs" Link="EndfieldIndexWorkspace.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldSharedIndexes.cs" Link="EndfieldSharedIndexes.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldSharedResources.cs" Link="EndfieldSharedResources.cs" />
+    <Compile Include="../AnimeStudio.GUI/EndfieldSharedNativeTools.cs" Link="EndfieldSharedNativeTools.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldIndexUpdates.cs" Link="EndfieldIndexUpdates.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldIndexStore.cs" Link="EndfieldIndexStore.cs" />
     <Compile Include="../AnimeStudio.GUI/EndfieldBundleDependencyIndex.cs" Link="EndfieldBundleDependencyIndex.cs" />

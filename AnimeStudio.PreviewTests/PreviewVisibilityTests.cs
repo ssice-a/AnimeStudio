@@ -1,5 +1,7 @@
 using AnimeStudio.GUI;
+using System.Drawing;
 using System.Text.Json;
+using System.Windows.Forms;
 using OpenTK.GLControl;
 using OpenTK.Graphics.OpenGL;
 using OpenTK.Mathematics;
@@ -130,5 +132,50 @@ internal static class PreviewVisibilityTests
             }
         }
         Console.WriteLine($"VISIBILITY STATE PASS {cases.RootElement.GetArrayLength()} shared alpha-policy cases; culling, depth and silk coverage equation");
+    }
+
+    internal static void ViewportResize()
+    {
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        using var form = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new(-3000, -3000), Size = new(800, 450) };
+        using var gl = new GLControl { Dock = DockStyle.Fill, APIVersion = new Version(3, 3), Profile = OpenTK.Windowing.Common.ContextProfile.Core };
+        form.Controls.Add(gl); form.Show(); Application.DoEvents(); gl.MakeCurrent();
+        var originalClientSize = form.ClientSize;
+        var data = new NarakaPrefabPreview(); data.Parts.Add(Quad("resize", 0, Mat(new(1, 0, 0, 1))));
+        using var renderer = new NarakaPreviewRenderer(data);
+
+        (bool Top, bool Bottom) RenderCoverage()
+        {
+            GL.ClearColor(0, 0, 0, 1);
+            GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+            renderer.DrawScene(Matrix4.Identity, Matrix4.Identity,
+                NarakaPreviewCamera.Projection(gl.ClientSize.Width, gl.ClientSize.Height), 0, false);
+            GL.Finish();
+            bool RedAt(int y)
+            {
+                var pixel = new byte[4];
+                GL.ReadPixels(gl.ClientSize.Width / 2, y, 1, 1, PixelFormat.Rgba, PixelType.UnsignedByte, pixel);
+                return pixel[0] > 240 && pixel[1] < 5 && pixel[2] < 5;
+            }
+            return (RedAt(gl.ClientSize.Height * 3 / 4), RedAt(gl.ClientSize.Height / 4));
+        }
+
+        NarakaPreviewCamera.SetViewport(gl.ClientSize.Width, gl.ClientSize.Height);
+        var initial = RenderCoverage();
+        Check(initial.Top && initial.Bottom, "initial preview does not cover both viewport halves");
+
+        form.ClientSize = new Size(originalClientSize.Width, originalClientSize.Height * 2);
+        Application.DoEvents(); gl.MakeCurrent();
+        Check(gl.ClientSize.Height > originalClientSize.Height * 3 / 2, "GLControl did not grow with its parent");
+        var stale = RenderCoverage();
+        Check(!stale.Top && stale.Bottom, "resize fixture did not reproduce clipping with the stale viewport");
+
+        NarakaPreviewCamera.SetViewport(gl.ClientSize.Width, gl.ClientSize.Height);
+        var resized = RenderCoverage();
+        Check(resized.Top && resized.Bottom, "resized preview clips geometry above the viewport midpoint");
+
+        form.ClientSize = originalClientSize; Application.DoEvents(); gl.MakeCurrent();
+        NarakaPreviewCamera.SetViewport(gl.ClientSize.Width, gl.ClientSize.Height);
+        Console.WriteLine("VISIBILITY VIEWPORT PASS stale resized viewport clips upper half; synchronized viewport restores full model");
     }
 }

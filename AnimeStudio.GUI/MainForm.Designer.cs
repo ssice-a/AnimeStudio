@@ -1369,6 +1369,7 @@ namespace AnimeStudio.GUI
             glControl.TabIndex = 4;
             glControl.Visible = false;
             glControl.Load += glControl_Load;
+            glControl.Resize += glControl_Resize;
             glControl.Paint += glControl_Paint;
             glControl.MouseDown += glControl_MouseDown;
             glControl.MouseMove += glControl_MouseMove;

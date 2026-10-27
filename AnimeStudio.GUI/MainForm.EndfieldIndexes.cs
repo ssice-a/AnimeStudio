@@ -10,6 +10,46 @@ namespace AnimeStudio.GUI;
 
 partial class MainForm
 {
+    private void SetEndfieldResourceRoot()
+    {
+        var current = EndfieldSharedResources.ResourceRoot;
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "选择编译器和资源工具包的存储位置。AnimeStudio 索引保留在单独选择的工作区。",
+            SelectedPath = Directory.Exists(current) ? current : string.Empty,
+            ShowNewFolderButton = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        EndfieldSharedResources.SetResourceRoot(dialog.SelectedPath);
+        MessageBox.Show(this, "EFF 工具将保存在：\n" + Path.Combine(dialog.SelectedPath, "tools"),
+            "EFF 工具存储位置", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    private async Task PrepareEndfieldSharedToolsAsync()
+    {
+        var root = EndfieldSharedResources.ResourceRoot;
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            SetEndfieldResourceRoot();
+            root = EndfieldSharedResources.ResourceRoot;
+            if (string.IsNullOrWhiteSpace(root)) return;
+        }
+        try
+        {
+            var progress = new Progress<string>(StatusStripUpdate);
+            var compiler = await Task.Run(() => EndfieldSharedNativeTools.EnsureInstalledAsync(
+                root, progress, endfieldToolsCancellation.Token), endfieldToolsCancellation.Token);
+            StatusStripUpdate("EFF tools ready: " + compiler);
+        }
+        catch (OperationCanceledException) when (endfieldToolsCancellation.IsCancellationRequested)
+        { StatusStripUpdate("EFF tool preparation canceled."); }
+        catch (Exception error)
+        {
+            StatusStripUpdate("EFF tools: " + error.Message);
+            MessageBox.Show(this, error.Message, "EFF shared tools", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private async Task<string> SelectEndfieldWorkspace(EndfieldVfsArchive archive)
     {
         var token = endfieldIndexCancellation.Token;
@@ -28,12 +68,23 @@ partial class MainForm
     {
         try
         {
-            var workspace = EndfieldSharedIndexes.Workspaces(game).FirstOrDefault(Directory.Exists);
+            var selected = EndfieldSharedIndexes.WorkspacePath(EndfieldSharedResources.IndexWorkspace);
+            var workspace = Directory.Exists(selected) ? selected : EndfieldSharedIndexes.Workspaces(game).FirstOrDefault(Directory.Exists);
             if (workspace == null && endfieldVfsArchive != null &&
                 string.Equals(EndfieldSharedIndexes.Game(endfieldVfsArchive), game, StringComparison.OrdinalIgnoreCase))
                 workspace = endfieldWorkspace;
-            workspace ??= EndfieldSharedIndexes.DefaultWorkspace(game);
-            Directory.CreateDirectory(workspace);return workspace;
+            if (workspace == null)
+            {
+                var suggested = EndfieldSharedIndexes.DefaultWorkspace(game);
+                if (!string.IsNullOrWhiteSpace(suggested))
+                {
+                    Directory.CreateDirectory(suggested);
+                    workspace = suggested;
+                }
+            }
+            if (string.IsNullOrWhiteSpace(workspace) || !Directory.Exists(workspace))
+                workspace = Directory.Exists(game) ? game : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            return workspace;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         { return Environment.CurrentDirectory; }
@@ -44,7 +95,10 @@ partial class MainForm
         var token = endfieldIndexCancellation.Token;
         StatusStripUpdate("正在检查已有索引，File > Abort 可取消…");
         if (await Task.Run(() => EndfieldVfsAssetIndexBuilder.TryGetOrRebindCurrentIndex(archive, workspace, out _, token), token))
+        {
+            EndfieldSharedIndexes.TryRemember(archive, workspace, token);
             return EndfieldVfsAssetIndexBuilder.GetIndexPath(workspace);
+        }
 
         string source = EndfieldIndexUpdates.DefaultSource;
         while (true)
@@ -75,7 +129,7 @@ partial class MainForm
                     var content = await Task.Run(() => EndfieldPortableIndex.ContentIdentity(archive), token);
                     var item = catalog?.Indexes.LastOrDefault(i => i.Release.GameContent == content);
                     if (item == null) throw new IOException("发布源中没有匹配当前游戏资源的完整索引。可以选择本地构建，或导入其他已下载的索引包。");
-                    package = EndfieldIndexUpdates.CachedPackage(item);
+                    package = EndfieldIndexUpdates.CachedPackage(item, workspace);
                     await EndfieldIndexUpdates.Download(item, package, new Progress<string>(StatusStripUpdate), token);
                 }
                 StatusStripUpdate("正在校验并导入索引，File > Abort 可取消…");

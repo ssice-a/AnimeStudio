@@ -17,10 +17,15 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 2 && args[0] == "--bundle-probe") return NarakaPrefabProbe.Bundle(args[1]);
+            if (args.Length == 4 && args[0] == "--prefab-render") return NarakaPrefabProbe.Run(args[1], args[2], args[3], 1, render: true);
+            if (args.Length is 4 or 5 && args[0] == "--prefab-probe") return NarakaPrefabProbe.Run(args[1], args[2], args[3], args.Length == 5 ? int.Parse(args[4]) : int.MaxValue);
             if (args.Length == 3 && args[0] == "--bone-sources") return NarakaBoneSourceTests.Run(args[1], args[2]);
+            if (args.Length == 3 && args[0] == "--effect-package") return NarakaEffectPackageTests.Run(args[1], args[2]);
             if (args.Length == 4 && args[0] == "--shader-evidence") return ShaderAlphaEvidence.Dump(args[1], args[3], args[2]);
             if (args.Length == 3 && args[0] == "--export-lifecycle") return PreviewExportLifecycleTests.Run(args[1], args[2]);
             if (args.Length == 1 && args[0] == "--camera") { PreviewOrientationTests.Camera(); return 0; }
+            if (args.Length == 1 && args[0] == "--viewport") { PreviewVisibilityTests.ViewportResize(); return 0; }
             if (args.Length == 2 && args[0] == "--orientation") return PreviewOrientationTests.Source(args[1]);
             if (args.Length == 3 && args[0] == "--shader-alpha") return ShaderAlphaEvidence.Dump(args[1], args[2]);
             if (args.Length == 3 && args[0] == "--prefab") return PrefabPreviewTests.Run(args[1], args[2]);

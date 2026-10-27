@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Specialized;
 using System.IO;
 using System.Linq;
 using AnimeStudio;
@@ -11,6 +13,8 @@ namespace AnimeStudio.GUI;
 // multi-costume bundles. Bundle streams stay lazy until a referenced object is used.
 internal sealed class NarakaPrefabLoader : IDisposable
 {
+    internal sealed record PrefabReference(GameObject Owner, string Path);
+
     internal readonly AssetsManager Manager;
     private readonly Dictionary<string, SerializedFile> files;
     private readonly Dictionary<SerializedFile, Dictionary<long, ObjectInfo>> objects;
@@ -71,11 +75,73 @@ internal sealed class NarakaPrefabLoader : IDisposable
     internal T Require<T>(PPtr<T> pointer, SerializedFile owner) where T : AssetObject =>
         Resolve(pointer, owner) ?? throw new InvalidDataException($"Unresolved {typeof(T).Name}: {owner.fileName}:{pointer?.m_FileID}:{pointer?.m_PathID}");
 
-    private AssetObject FieldReference(object value, AssetObject owner)
+    internal AssetObject FieldReference(object value, AssetObject owner)
     {
-        if (value is not System.Collections.Specialized.OrderedDictionary reference) return null;
+        if (value is not OrderedDictionary reference || !reference.Contains("m_FileID") || !reference.Contains("m_PathID")) return null;
         return Resolve(new PPtr<AssetObject>(Convert.ToInt32(reference["m_FileID"]),
             Convert.ToInt64(reference["m_PathID"]), owner.assetsFile), owner.assetsFile);
+    }
+
+    internal string ScriptClassName(AssetObject component)
+    {
+        var fields = Fields(component);
+        var script = FieldReference(fields?["m_Script"], component);
+        return script == null ? null : Fields(script)?["m_ClassName"]?.ToString();
+    }
+
+    internal IReadOnlyList<PrefabReference> PrefabLoaderReferences(GameObject root)
+    {
+        var references = new List<PrefabReference>();
+        foreach (var gameObject in EndfieldPrefabDocument.GetHierarchy(root))
+        foreach (var pointer in gameObject.m_Components)
+        {
+            if (ReferenceType(pointer.Cast<AssetObject>(), gameObject.assetsFile) != ClassIDType.MonoBehaviour)
+                continue;
+            var component = Resolve(pointer.Cast<AssetObject>(), gameObject.assetsFile);
+            if (component == null || !string.Equals(ScriptClassName(component), "PrefabLoader", StringComparison.Ordinal))
+                continue;
+            var fields = Fields(component);
+            var path = fields?["path"]?.ToString()?.Replace('\\', '/').Trim();
+            if (!string.IsNullOrWhiteSpace(path)) references.Add(new PrefabReference(gameObject, path));
+        }
+        return references;
+    }
+
+    internal IReadOnlyList<(AssetObject Asset, string FieldPath)> ReferencedResources(AssetObject component)
+    {
+        var result = new List<(AssetObject Asset, string FieldPath)>();
+        var visitedSprites = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Visit(Fields(component), component, string.Empty);
+        return result;
+
+        void Visit(object value, AssetObject owner, string path)
+        {
+            if (value is OrderedDictionary dictionary)
+            {
+                if (dictionary.Contains("m_FileID") && dictionary.Contains("m_PathID"))
+                {
+                    var asset = FieldReference(dictionary, owner);
+                    if (asset == null) return;
+                    if (asset.type is ClassIDType.Mesh or ClassIDType.Material or ClassIDType.Texture2D or
+                        ClassIDType.Texture2DArray or ClassIDType.Sprite)
+                        result.Add((asset, path));
+                    if (asset.type == ClassIDType.Sprite && visitedSprites.Add(NarakaPackageWriter.Identity(asset)))
+                        Visit(Fields(asset), asset, path + ".sprite");
+                    return;
+                }
+
+                foreach (DictionaryEntry entry in dictionary)
+                    Visit(entry.Value, owner, path.Length == 0 ? entry.Key.ToString() : path + "." + entry.Key);
+                return;
+            }
+
+            if (value is IEnumerable sequence && value is not string)
+            {
+                var index = 0;
+                foreach (var item in sequence)
+                    Visit(item, owner, path + "[" + index++ + "]");
+            }
+        }
     }
 
     internal Mesh RendererMesh(GameObject gameObject, Renderer renderer)

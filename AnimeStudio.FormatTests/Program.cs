@@ -31,6 +31,7 @@ internal static class FormatTests
             () => StreamedMesh(GameType.Naraka, true, true),
             CompressedNarakaMesh,
             ConstantPackedFloats,
+            NarakaBundleBoundaryTests.Run,
         })
         {
             try { test(); }
