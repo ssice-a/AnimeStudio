@@ -145,9 +145,27 @@ namespace AnimeStudio.GUI
         }
 
         internal static Dictionary<string, EndfieldPrefabExportIndex> LoadPrefabExportIndexes(string path, IEnumerable<string> containers)
+            => LoadPrefabExportIndexes(path, containers, null);
+
+        internal static Dictionary<string, EndfieldPrefabExportIndex> LoadPostmodelPrefabExportIndexes(
+            string path, IReadOnlyCollection<(string Path, string Asset)> meshTargets)
         {
-            var targets = containers.Select(p => p.Replace('\\', '/').Trim('/')).Distinct(StringComparer.OrdinalIgnoreCase)
+            if (meshTargets == null || meshTargets.Count == 0)
+                throw new ArgumentException("At least one legacy Mesh target is required.", nameof(meshTargets));
+            return LoadPrefabExportIndexes(path, null, meshTargets);
+        }
+
+        private static Dictionary<string, EndfieldPrefabExportIndex> LoadPrefabExportIndexes(
+            string path, IEnumerable<string> containers,
+            IReadOnlyCollection<(string Path, string Asset)> meshTargets)
+        {
+            var discoverPostmodels = containers == null;
+            var targets = (containers ?? Array.Empty<string>()).Select(NormalizeContainer).Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(p => p, _ => new List<VirtualAssetRecord>(), StringComparer.OrdinalIgnoreCase);
+            var wantedMeshes = meshTargets?.Select(row => MeshKey(row.Path, row.Asset))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var foundMeshes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var targetSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var dependencies = new EndfieldBundleDependencyIndex();
             string fingerprint;
 
@@ -174,7 +192,19 @@ namespace AnimeStudio.GUI
                     {
                         assetCount++;
                         var record = ReadAsset(reader);
-                        if (targets.TryGetValue(record.Container.Replace('\\', '/').Trim('/'), out var records)) records.Add(record);
+                        var container = NormalizeContainer(record.Container);
+                        if (wantedMeshes != null && record.Type.Equals("Mesh", StringComparison.OrdinalIgnoreCase) &&
+                            wantedMeshes.Contains(MeshKey(container, record.Name)))
+                        {
+                            foundMeshes.Add(MeshKey(container, record.Name));
+                            if (!string.IsNullOrWhiteSpace(record.Source)) targetSources.Add(record.Source);
+                        }
+                        if (!targets.TryGetValue(container, out var records) && discoverPostmodels && IsCharacterPostmodel(container))
+                        {
+                            records = new List<VirtualAssetRecord>();
+                            targets.Add(container, records);
+                        }
+                        records?.Add(record);
                         continue;
                     }
 
@@ -196,6 +226,27 @@ namespace AnimeStudio.GUI
                     throw new InvalidDataException("Unknown EFF Endfield index record.");
                 }
                 if (!ended) throw new InvalidDataException("The Endfield index has no end record.");
+            }
+
+            if (wantedMeshes != null)
+            {
+                var missingMeshes = wantedMeshes.Except(foundMeshes, StringComparer.OrdinalIgnoreCase).ToArray();
+                if (missingMeshes.Length != 0)
+                    throw new FileNotFoundException("Mesh target is absent from the current Endfield index: " + missingMeshes[0].Replace('\n', '/'));
+
+                var matchingPostmodels = new Dictionary<string, List<VirtualAssetRecord>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in targets)
+                {
+                    if (!IsCharacterPostmodel(pair.Key)) continue;
+                    var sources = pair.Value.Select(row => row.Source).Where(source => !string.IsNullOrWhiteSpace(source))
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                    if (sources.Length != 1) continue;
+                    var closure = dependencies.ResolveBundleClosure(sources[0]);
+                    if (targetSources.Overlaps(closure)) matchingPostmodels.Add(pair.Key, pair.Value);
+                }
+                targets = matchingPostmodels;
+                if (targets.Count == 0)
+                    throw new FileNotFoundException("No character postmodel Prefab depends on the requested Mesh targets.");
             }
 
             var closures = new Dictionary<string, (VirtualAssetFile Prefab, HashSet<string> Sources)>(StringComparer.OrdinalIgnoreCase);
@@ -250,6 +301,19 @@ namespace AnimeStudio.GUI
             var bySource = closureAssets.ToLookup(r => r.Source, StringComparer.OrdinalIgnoreCase);
             return closures.ToDictionary(c => c.Key, c => new EndfieldPrefabExportIndex(c.Value.Prefab,
                 c.Value.Sources.SelectMany(s => bySource[s]).ToArray(), dependencies, fingerprint), StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeContainer(string value) => value.Replace('\\', '/').Trim('/');
+
+        private static string MeshKey(string path, string asset) => NormalizeContainer(path) + "\n" + (asset ?? string.Empty).Trim();
+
+        private static bool IsCharacterPostmodel(string container)
+        {
+            const string root = "assets/beyond/dynamicassets/gameplay/actors/postmodels/characters/";
+            if (!container.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return false;
+            var name = container[(container.LastIndexOf('/') + 1)..];
+            return name.StartsWith("chr_", StringComparison.OrdinalIgnoreCase) &&
+                name.EndsWith("_postmodel.prefab", StringComparison.OrdinalIgnoreCase);
         }
 
         private static FileStream OpenIndex(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read,

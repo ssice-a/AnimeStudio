@@ -16,8 +16,8 @@ namespace AnimeStudio.GUI;
 
 internal static class EndfieldSharedNativeTools
 {
-    private const string ManifestFormat = "EFF_SHARED_NATIVE_TOOLS/1";
-    private const string InstallFormat = "EFF_SHARED_NATIVE_TOOLS_INSTALL/1";
+    private const string ManifestFormat = "EFF_SHARED_NATIVE_TOOLS/3";
+    private const string InstallFormat = "EFF_SHARED_NATIVE_TOOLS_INSTALL/3";
     private const long MaxArchiveBytes = 512L * 1024 * 1024;
     private const string ReleaseApi = "https://api.github.com/repos/ssice-a/EFF/releases/latest";
     private static readonly HttpClient Client = CreateClient();
@@ -104,7 +104,11 @@ internal static class EndfieldSharedNativeTools
         if (String(value, "archiveRoot") != "EFF_Native_Tools" ||
             String(value, "compiler") != "nativepack/eff_resource_pack.exe" ||
             String(value, "indexUpdater") != "nativepack/eff_source_index.exe" ||
+            String(value, "authorAssets") != "nativepack/eff_author_assets.dll" ||
             String(value, "authorCore") != "nativepack/eff_author_core.dll" ||
+            String(value, "textureCompressor") != "nativepack/texconv.exe" ||
+            String(value, "legacyMigrator") != "nativepack/eff_migrate_mods.exe" ||
+            String(value, "migrationSourceExporter") != "nativepack/source-exporter/eff_migrate_sources.exe" ||
             String(value, "protocol") != "nativepack/package-protocol.json")
             throw new IOException("EFF 共享工具清单中的文件布局不受支持。");
         return new Manifest(url, digest, size, releaseTag);

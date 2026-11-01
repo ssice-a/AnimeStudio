@@ -45,6 +45,11 @@ namespace AnimeStudio.GUI
                 Environment.ExitCode = EndfieldPrefabPackageCommand.Run(args);
                 return;
             }
+            if (args?.Length > 0 && string.Equals(args[0], "--export-eff-migration-sources", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = EndfieldMigrationSourceCommand.Run(args);
+                return;
+            }
             Application.SetHighDpiMode(HighDpiMode.SystemAware);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

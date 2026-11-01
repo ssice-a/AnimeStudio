@@ -94,7 +94,7 @@ internal static class IndexDistributionTests
             File.WriteAllBytes(Path.Combine(package, "vendor", "PIL", "_imaging.cp313-win_amd64.pyd"), []);
             File.WriteAllText(Path.Combine(root, "tools", "current.json"), JsonSerializer.Serialize(new
             {
-                format = "EFF_SHARED_NATIVE_TOOLS_INSTALL/1",
+                format = "EFF_SHARED_NATIVE_TOOLS_INSTALL/3",
                 sha256 = digest,
                 release = "fixture"
             }));
