@@ -348,7 +348,7 @@ namespace AnimeStudio.GUI
             var originalName = texture.Name ?? string.Empty;
             try
             {
-                using var image = texture.ConvertToImage(true);
+                using var image = texture.ConvertToImage(false);
                 if (image == null)
                     throw new InvalidDataException("Texture pixels are unavailable.");
                 using var stream = File.Create(Path.Combine(rootDirectory, fileName));

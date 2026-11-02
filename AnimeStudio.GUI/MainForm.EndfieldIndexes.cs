@@ -155,7 +155,7 @@ internal sealed class EndfieldIndexSourceDialog : Form
         Text = "准备终末地资源索引";StartPosition = FormStartPosition.CenterParent;ClientSize = new Size(600, 300);
         FormBorderStyle = FormBorderStyle.FixedDialog;MaximizeBox = false;MinimizeBox = false;
         Font = new System.Drawing.Font("Microsoft YaHei UI", 9);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, RowCount = 7 };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 1, RowCount = 8 };
         layout.Controls.Add(new Label { Text = "当前工作区需要资源索引，请选择准备方式。", AutoSize = true });
         layout.Controls.Add(new Label { Text = "下载可省去全游戏索引构建；模型、贴图和特效仍从本机游戏按需提取。", AutoSize = true });
         layout.Controls.Add(new Label { Text = "索引发布源（GitHub Release API 或索引目录地址）", AutoSize = true });
@@ -167,6 +167,7 @@ internal sealed class EndfieldIndexSourceDialog : Form
             button.Click += (_, _) => { Choice = option.Item2;DialogResult = DialogResult.OK;Close(); };buttons.Controls.Add(button);
         }
         layout.Controls.Add(buttons);
+        layout.Controls.Add(new Label { Text = "手动下载后选“导入索引包…”并选择 .effindex.gz。\n软件会校验并解包到当前工作区的 index 文件夹。", AutoSize = true });
         layout.Controls.Add(new Label { Text = "已有可用索引会直接复用。下载、导入或构建时可在 File > Abort 中取消。", AutoSize = true });
         var cancel = new Button { Text = "取消", AutoSize = true, DialogResult = DialogResult.Cancel };
         CancelButton = cancel;layout.Controls.Add(cancel);Controls.Add(layout);
