@@ -1,9 +1,29 @@
-param([string]$RestoreSources, [string[]]$Frameworks = @('net9.0-windows', 'net10.0-windows'))
+param(
+    [string]$RestoreSources,
+    [string[]]$Frameworks = @('net9.0-windows', 'net10.0-windows'),
+    [string]$OutputRoot
+)
 $ErrorActionPreference = 'Stop'
 [string[]]$animeRestoreArgs = @()
 if ($RestoreSources) { $animeRestoreArgs = @('-p:RestoreSources=' + $RestoreSources) }
 $animeBuildRoot = [IO.Path]::GetFullPath($PSScriptRoot)
-$animeDistRoot = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot 'dist'))
+$animeDistRoot = if ($OutputRoot) {
+    [IO.Path]::GetFullPath($OutputRoot)
+} else {
+    [IO.Path]::GetFullPath((Join-Path $animeBuildRoot 'dist'))
+}
+
+function Resolve-DistPath([string]$path) {
+    $resolved = if ([IO.Path]::IsPathRooted($path)) {
+        [IO.Path]::GetFullPath($path)
+    } else {
+        [IO.Path]::GetFullPath((Join-Path $animeDistRoot $path))
+    }
+    if (-not $resolved.StartsWith($animeDistRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to reset an output directory outside '$animeDistRoot': $resolved"
+    }
+    return $resolved
+}
 
 # prepare patcher
 dotnet build AnimeStudio.Patcher -c Release -f net9.0 @animeRestoreArgs
@@ -12,10 +32,7 @@ $patcher = "AnimeStudio.Patcher\bin\Release\net9.0\AnimeStudio.Patcher.exe"
 if (-not (Test-Path $patcher)) { throw "Patcher not found at $patcher" }
 
 function Reset-Dir([string]$path) {
-    $path = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot $path))
-    if (-not $path.StartsWith($animeDistRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to reset a directory outside dist: $path"
-    }
+    $path = Resolve-DistPath $path
     if (Test-Path $path) {
         Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
     }
@@ -23,10 +40,7 @@ function Reset-Dir([string]$path) {
 }
 
 function Remove-EmptyDirectories([string]$path) {
-    $path = [IO.Path]::GetFullPath((Join-Path $animeBuildRoot $path))
-    if (-not $path.StartsWith($animeDistRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to clean a directory outside dist: $path"
-    }
+    $path = Resolve-DistPath $path
     if (-not (Test-Path $path)) { return }
 
     while ($true) {
@@ -51,7 +65,7 @@ function Remove-EmptyDirectories([string]$path) {
 
 foreach ($tfm in $Frameworks) {
     # config
-    $outputDir = ".\dist\$tfm"
+    $outputDir = Join-Path $animeDistRoot $tfm
     $configuration = 'Release'
 
     # prepare paths
