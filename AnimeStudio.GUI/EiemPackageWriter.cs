@@ -348,11 +348,8 @@ namespace AnimeStudio.GUI
             var originalName = texture.Name ?? string.Empty;
             try
             {
-                using var image = texture.ConvertToImage(false);
-                if (image == null)
-                    throw new InvalidDataException("Texture pixels are unavailable.");
                 using var stream = File.Create(Path.Combine(rootDirectory, fileName));
-                image.WriteToStream(stream, ImageFormat.Png);
+                WriteSourceTexturePng(texture, stream);
             }
             catch (Exception ex)
             {
@@ -377,6 +374,14 @@ namespace AnimeStudio.GUI
             declaration.Add(string.Empty);
             resourceIni.AddRange(declaration);
             return section;
+        }
+
+        internal static void WriteSourceTexturePng(Texture2D texture, Stream output)
+        {
+            using var image = texture.ConvertToImage(true);
+            if (image == null)
+                throw new InvalidDataException("Texture pixels are unavailable.");
+            image.WriteToStream(output, ImageFormat.Png);
         }
 
         private void WriteMesh(string path, Mesh mesh, string source, IReadOnlyList<string> bonePaths)

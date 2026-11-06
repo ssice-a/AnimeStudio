@@ -139,6 +139,26 @@ var nullManaged = Raw(w => { w.Write(2); w.Write(1); w.Write(-2L); Text(w, ""); 
 Check(new TypeTreeDocument(registry, nullManaged).Encode().SequenceEqual(nullManaged), "managed null marker");
 
 T Blank<T>() => (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
+{
+    var rgba = new byte[] {
+        255, 0, 0, 255, 0, 255, 0, 255,
+        0, 0, 255, 255, 255, 255, 0, 255,
+    };
+    var texture = Blank<Texture2D>();
+    texture.m_Width = texture.m_Height = 2;
+    texture.m_TextureFormat = TextureFormat.RGBA32;
+    using var sourcePixels = new MemoryStream(rgba, false);
+    using var reader = new BinaryReader(sourcePixels);
+    texture.image_data = new ResourceReader(reader, 0, rgba.Length);
+    using var png = new MemoryStream();
+    EiemPackageWriter.WriteSourceTexturePng(texture, png);
+    png.Position = 0;
+    using var decoded = SkiaSharp.SKBitmap.Decode(png);
+    Check(decoded != null && decoded.Width == 2 && decoded.Height == 2 &&
+          decoded.GetPixel(0, 0).Blue == 255 && decoded.GetPixel(1, 0).Red == 255 &&
+          decoded.GetPixel(0, 1).Red == 255 && decoded.GetPixel(1, 1).Green == 255,
+          "EFFSOURCE PNG preserves the legacy vertical row orientation");
+}
 var file = Blank<SerializedFile>(); file.fileName = "CAB-test"; file.ObjectsDic = new(); file.m_Externals = new();
 (GameObject, Transform) Node(long id, string name)
 {
