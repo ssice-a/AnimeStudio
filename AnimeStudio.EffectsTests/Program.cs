@@ -192,6 +192,26 @@ try
     File.WriteAllText(Path.Combine(temp, "user.txt"), "keep");
     try { EiemPackagePublication.Publish(temp, staged => throw new InvalidDataException("injected failure")); } catch (InvalidDataException) { }
     Check(File.ReadAllText(Path.Combine(temp, "source/manifest.json")) == "old", "failure retains previous complete source");
+
+    var previewMesh = Blank<Mesh>();
+    previewMesh.assetsFile = file; previewMesh.m_PathID = 901; previewMesh.m_Name = "VAT preview fixture";
+    previewMesh.type = ClassIDType.Mesh; previewMesh.m_VertexCount = 3;
+    previewMesh.m_Vertices = new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0 };
+    previewMesh.m_Indices = new() { 0, 1, 2 };
+    previewMesh.m_UV0 = new float[] { 0, 0, 1, 0, 0, 1 };
+    previewMesh.m_UV1 = new float[] { .1f, .9f, .2f, .9f, .3f, .9f };
+    previewMesh.m_Normals = new float[] { 0, 0, 1, 0, 0, 1, 0, 0, 1 };
+    previewMesh.m_Tangents = new float[] { 1, 0, 0, -1, 1, 0, 0, -1, 1, 0, 0, -1 };
+    previewMesh.m_Colors = new float[] { 1, 0, 0, .25f, 0, 1, 0, .5f, 0, 0, 1, 1 };
+    previewMesh.m_SubMeshes = new() { new SubMesh { firstByte = 0, indexCount = 3, baseVertex = 2, topology = GfxPrimitiveType.Triangles } };
+    var preview = JObject.FromObject(EiemEffectPreviewWriter.Write(temp, new AssetObject[] { previewMesh }));
+    var previewRow = preview["resources"].Single();
+    Check((int)preview["version"] == 1 && (string)previewRow["kind"] == "Mesh", "preview keeps v1 compatibility");
+    var previewGeometry = JObject.Parse(File.ReadAllText(Path.Combine(temp, (string)previewRow["file"])));
+    Check(JToken.DeepEquals(previewGeometry["uv"], JArray.FromObject(previewMesh.m_UV0)), "legacy preview UV0 alias preserved");
+    Check(previewGeometry["uvs"].Count() == 8 && previewGeometry["uvs"][1].ToObject<float[]>().SequenceEqual(previewMesh.m_UV1), "VAT lookup UV1 survives preview export");
+    Check(JToken.DeepEquals(previewGeometry["colors"], JArray.FromObject(previewMesh.m_Colors)) && JToken.DeepEquals(previewGeometry["tangents"], JArray.FromObject(previewMesh.m_Tangents)), "preview colors and tangent handedness preserved");
+    Check((uint)previewGeometry["submeshes"][0]["nativeIndexCount"] == 3 && (uint)previewGeometry["submeshes"][0]["baseVertex"] == 2 && (int)previewGeometry["submeshes"][0]["topology"] == 0, "preview retains native submesh metadata");
 }
 finally { if (Directory.Exists(temp)) Directory.Delete(temp, true); }
 

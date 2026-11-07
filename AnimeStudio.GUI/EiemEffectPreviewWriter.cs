@@ -26,7 +26,11 @@ internal static class EiemEffectPreviewWriter
                     if (image == null) throw new InvalidDataException("Texture pixels unavailable");
                     string file = stem + ".png";
                     using (var stream = File.Create(Path.Combine(directory, file))) image.WriteToStream(stream, ImageFormat.Png);
-                    resources.Add(new { identity, kind = "Texture2D", file, name = asset.Name, width = texture.m_Width, height = texture.m_Height });
+                    resources.Add(new { identity, kind = "Texture2D", file, name = asset.Name,
+                        width = texture.m_Width, height = texture.m_Height, textureFormat = (int)texture.m_TextureFormat,
+                        colorSpace = texture.m_ColorSpace, mipCount = texture.m_MipCount,
+                        dataPreviewOnly = texture.m_TextureFormat is TextureFormat.RGBAHalf or TextureFormat.RGBAFloat,
+                        nativeStream = texture.m_StreamData });
                 }
                 else if (asset is Mesh mesh && mesh.m_Vertices?.Length > 0)
                 {
@@ -34,7 +38,16 @@ internal static class EiemEffectPreviewWriter
                     if (stride < 3 || mesh.m_Indices.Count % 3 != 0) throw new InvalidDataException("Unsupported preview mesh layout");
                     var vertices = Enumerable.Range(0, count).Select(i => mesh.m_Vertices.Skip(i * stride).Take(3).ToArray()).ToArray();
                     string file = stem + ".mesh.json";
-                    File.WriteAllText(Path.Combine(directory, file), JsonConvert.SerializeObject(new { vertices, indices = mesh.m_Indices, uv = mesh.m_UV0, normals = mesh.m_Normals }));
+                    // Keep v1's UV0 alias for older readers, but do not discard
+                    // UV1 (VAT lookup), colors, tangents or submesh boundaries.
+                    var uvs = new[] { mesh.m_UV0, mesh.m_UV1, mesh.m_UV2, mesh.m_UV3,
+                        mesh.m_UV4, mesh.m_UV5, mesh.m_UV6, mesh.m_UV7 };
+                    var submeshes = mesh.m_SubMeshes.Select(sub => new {
+                        nativeIndexByteOffset = sub.firstByte, nativeIndexCount = sub.indexCount,
+                        baseVertex = sub.baseVertex, topology = (int)sub.topology });
+                    File.WriteAllText(Path.Combine(directory, file), JsonConvert.SerializeObject(new {
+                        vertices, indices = mesh.m_Indices, uv = mesh.m_UV0, uvs,
+                        normals = mesh.m_Normals, tangents = mesh.m_Tangents, colors = mesh.m_Colors, submeshes }));
                     resources.Add(new { identity, kind = "Mesh", file, name = asset.Name });
                 }
             }

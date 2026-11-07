@@ -1,4 +1,8 @@
-# AnimeStudio v1.9.3
+# AnimeStudio v1.9.4
+
+This release preserves VAT lookup UVs, vertex colors, tangent handedness, native submesh boundaries, and texture metadata in effect preview exports while retaining the v1 preview JSON compatibility aliases. Both .NET 9 and .NET 10 Windows packages remain supported.
+
+## AnimeStudio v1.9.3
 
 - 修复 EFFSOURCE PNG 行方向回归，恢复与 v1.9.0 相同的 V 翻转，使贴图能正确对应 Blender 模型 UV。
 - 游戏 DDS 导出仍按 Blender 当前像素上下翻转一次，以匹配游戏采样方向。
