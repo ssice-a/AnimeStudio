@@ -106,8 +106,10 @@ internal sealed class EiemEffectEmitterEdits
         var validation = files.ToDictionary(p => p.Key, p => p.Value.File, StringComparer.OrdinalIgnoreCase);
         foreach (var item in declarations)
         {
-            var (doc, row, raw) = Source(item.Template);
-            var expected = (JObject)doc.Root.ToJson().DeepClone();
+            var (sourceDoc, row, _) = Source(item.Template);
+            string cab = (string)objects[item.Template]["native"]["cab"];
+            var doc = TypeTreeDocument.CreateDefault(row.serializedType.m_Type, files[cab].File.m_RefTypes);
+            var expected = (JObject)sourceDoc.Root.ToJson().DeepClone();
             int kind = Types[item.Identity];
             if (kind != 1) expected["m_GameObject"] = item.Data["m_GameObject"].DeepClone();
             if (kind == 4)
@@ -117,7 +119,6 @@ internal sealed class EiemEffectEmitterEdits
                 if (!JToken.DeepEquals(expected["m_Children"], item.Data["m_Children"])) throw new InvalidDataException("New emitter child membership differs");
             }
             doc.ApplyJson(item.Data);
-            string cab = (string)objects[item.Template]["native"]["cab"];
             EiemEffectBuildCommand.ValidateEdit(expected, doc, files[cab].File, validation, authoredTypes);
             Assets.Add(new(item.Identity, cab, long.Parse(item.Identity[(item.Identity.LastIndexOf(':') + 1)..]), row.typeID, kind, doc.Encode(), doc, expected));
         }

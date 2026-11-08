@@ -78,13 +78,20 @@ internal static class EiemEffectAssetEdits
         if (kind == 28)
         {
             int width = (int)after["m_Width"], height = (int)after["m_Height"], mips = (int)after["m_MipCount"];
+            int format = (int)after["m_TextureFormat"];
             if (width is <= 0 or > 16384 || height is <= 0 or > 16384 || mips <= 0 ||
                 mips > 1 + (int)Math.Floor(Math.Log2(Math.Max(width, height))) ||
-                (int)after["m_TextureFormat"] != 4 || (int)after["m_ColorSpace"] is not (0 or 1) ||
+                format is not (4 or 25 or 27) || (int)after["m_ColorSpace"] is not (0 or 1) ||
                 (int)after["m_ImageCount"] != 1 || (int)after["m_TextureDimension"] != 2 ||
                 (long)after["m_StreamData"]["size"] != 0 || (string)after["m_StreamData"]["path"] != "")
                 throw new InvalidDataException("Invalid authored Texture2D metadata");
-            long size = 0; for (int i = 0; i < mips; i++) size += (long)Math.Max(1, width >> i) * Math.Max(1, height >> i) * 4;
+            long size = 0;
+            for (int i = 0; i < mips; i++)
+            {
+                int mipWidth = Math.Max(1, width >> i), mipHeight = Math.Max(1, height >> i);
+                size += format == 4 ? (long)mipWidth * mipHeight * 4 :
+                    (long)Math.Max(1, (mipWidth + 3) / 4) * Math.Max(1, (mipHeight + 3) / 4) * 16;
+            }
             if (doc.Root["image data"].Length != size + 4 || (long)after["m_CompleteImageSize"] != size)
                 throw new InvalidDataException("Authored texture pixel/mipmap extent mismatch");
         }

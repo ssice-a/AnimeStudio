@@ -12,6 +12,14 @@ GUI：打开 Endfield 游戏目录和当前工作区，在 Logical Asset Paths �
 AnimeStudio.GUI.exe --export-eff-effects '<游戏或VFS目录>' '<工作区>' 'assets/beyond/.../effect.prefab' '<输出目录>'
 ```
 
+从空白创建作者特效：先选中一个已导入且带有来源证明的游戏 Mesh，再从 Blender 的 **文件 → 导入 → EFF 特效：从空白创建** 中选择同游戏版本的 `.efffx` 作为 TypeTree donor，填写根名称和输出目录。向导从 Mesh 来源证明读取目标 Prefab，并在创建后验证 Renderer 挂载证明。AnimeStudio 只读取 donor 的类型树，不复制 donor 的 Prefab 对象、Bundle 依赖、Mesh、Material 或 Texture；生成独立作者对象图和空材质的粒子 Renderer。也可从命令行运行：
+
+```powershell
+AnimeStudio.GUI.exe --create-eff-effect '<schema-donor.efffx目录>' 'assets/beyond/.../effect.prefab' '<输出.efffx目录>' 'My Effect'
+```
+
+生成的 `.efffx` 可由现有 Blender 来源导入、编辑并执行离线 native build。没有绑定游戏逻辑 Material 时，游戏内粒子不会有可见材质；从空白 workspace 解析逻辑路径并为原生 PPtr 接入游戏资源仍在开发中。离线 Bundle 往返不代表已通过游戏运行时验收。
+
 源文件剥离 Unity 版本时可追加 `--unity-version <实际版本>`。程序校验当前合并 VFS 与工作区索引，不使用硬编码的本机目录，也不猜测同名根节点。缺少 Bundle、层级损坏或组件登记缺失时拒绝发布新结果。
 
 ## 目录格式

@@ -1,4 +1,10 @@
-# AnimeStudio v1.9.4
+# AnimeStudio v1.9.5
+
+Adds an author-owned particle Prefab workflow for building effects from scratch. It uses game-version TypeTrees as schemas while creating a separate native object graph, and preserves the source effect editing and round-trip path.
+
+Both .NET 9 and .NET 10 Windows GUI/CLI packages remain supported.
+
+## AnimeStudio v1.9.4
 
 This release preserves VAT lookup UVs, vertex colors, tangent handedness, native submesh boundaries, and texture metadata in effect preview exports while retaining the v1 preview JSON compatibility aliases. Both .NET 9 and .NET 10 Windows packages remain supported.
 

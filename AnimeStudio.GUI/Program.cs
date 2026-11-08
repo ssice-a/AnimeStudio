@@ -18,6 +18,10 @@ namespace AnimeStudio.GUI
             {
                 Environment.ExitCode = EiemEffectBuildCommand.Run(args); return;
             }
+            if (args?.Length > 0 && string.Equals(args[0], "--create-eff-effect", StringComparison.OrdinalIgnoreCase))
+            {
+                Environment.ExitCode = EiemEffectAuthorCommand.Run(args); return;
+            }
             if (args?.Length > 0 && string.Equals(args[0], "--export-eff-effects", StringComparison.OrdinalIgnoreCase))
             {
                 Environment.ExitCode = EndfieldEffectSourceCommand.Run(args); return;

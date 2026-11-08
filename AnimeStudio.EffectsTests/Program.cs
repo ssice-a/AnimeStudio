@@ -3,6 +3,7 @@ using AnimeStudio.GUI;
 using Newtonsoft.Json.Linq;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using System.Text;
 using AssetObject = AnimeStudio.Object;
 
 Logger.Silent = true;
@@ -65,6 +66,167 @@ void Reject(Action action, string label)
     try { action(); } catch (InvalidDataException) { return; }
     throw new Exception("Expected rejection: " + label);
 }
+if (args.Length == 2 && args[0] == "--prefab-writer")
+{
+    string source = Path.GetFullPath(args[1]);
+    var baseline = JObject.Parse(File.ReadAllText(Path.Combine(source, "source/manifest.json")));
+    var manager = new AssetsManager { Game = GameManager.GetGameByType(GameType.ArknightsEndfield) };
+    int filesChecked = 0, objectsWritten = 0;
+    foreach (var row in baseline["serializedFiles"])
+    {
+        string cab = (string)row["cab"];
+        string snapshot = (string)row["snapshot"]["file"];
+        byte[] original = File.ReadAllBytes(Path.Combine(source, snapshot.Replace('/', Path.DirectorySeparatorChar)));
+        using var reader = new FileReader(cab, new MemoryStream(original, false));
+        var sourceFile = new SerializedFile(reader, manager);
+        if (sourceFile.m_Types == null || sourceFile.m_Types.Count == 0) continue;
+        byte[] metadataOnly = EiemEffectPrefabWriter.CreateMetadataOnly(sourceFile, original);
+        long emptyTableEnd = (sourceFile.ObjectCountOffset + 4 + 3) & ~3L;
+        using var metadataReader = new FileReader(cab, new MemoryStream(metadataOnly, false));
+        SerializedFile empty;
+        empty = new SerializedFile(metadataReader, manager);
+        Check(empty.m_Objects.Count == 0 && empty.m_Types.Count == sourceFile.m_Types.Count &&
+              empty.m_Externals.Count == 0 && empty.m_RefTypes.Count == 0 &&
+              empty.unityVersion == sourceFile.unityVersion && empty.m_TargetPlatform == sourceFile.m_TargetPlatform,
+              "metadata-only template retains game TypeTrees and has no source dependencies: " + cab);
+
+        var objects = new List<EiemEffectPrefabWriter.NativeObject>();
+        long pathId = 100;
+        foreach (int classId in new[] { 1, 4, 198, 199, 142 })
+        {
+            int typeId = sourceFile.m_Types.FindIndex(t => t.classID == classId && t.m_Type?.m_Nodes?.Count > 0);
+            if (typeId < 0) continue;
+            var document = TypeTreeDocument.CreateDefault(sourceFile.m_Types[typeId].m_Type, sourceFile.m_RefTypes);
+            objects.Add(new(pathId++, typeId, document.Encode()));
+        }
+        if (objects.Count == 0) continue;
+
+        byte[] rebuilt = EiemEffectPrefabWriter.Build(empty, metadataOnly, objects);
+        using var rebuiltReader = new FileReader(cab, new MemoryStream(rebuilt, false));
+        var parsed = new SerializedFile(rebuiltReader, manager);
+        Check(parsed.m_Objects.Count == objects.Count, "authored prefab object table parses: " + cab);
+        foreach (var authored in objects)
+        {
+            var parsedRow = parsed.m_Objects.Single(o => o.m_PathID == authored.PathId);
+            Check(parsedRow.typeID == authored.TypeId &&
+                  rebuilt.AsSpan((int)parsedRow.byteStart, (int)parsedRow.byteSize).SequenceEqual(authored.Payload),
+                  "authored native payload roundtrips: " + cab + ":" + parsedRow.classID);
+            _ = new TypeTreeDocument(parsedRow.serializedType.m_Type, authored.Payload, parsed.m_RefTypes);
+            objectsWritten++;
+        }
+        filesChecked++;
+    }
+    Check(filesChecked > 0, "real effect source contains at least one serializable native file");
+    Console.WriteLine($"PASS real SerializedFile prefab writer: {filesChecked} files, {objectsWritten} objects");
+    return;
+}
+if (args.Length == 5 && args[0] == "--author-loop")
+{
+    string donor = Path.GetFullPath(args[1]), parent = Path.GetFullPath(args[4]);
+    Directory.CreateDirectory(parent);
+    string work = Path.Combine(parent, "author-loop-" + Guid.NewGuid().ToString("N"));
+    string source = Path.Combine(work, "blank.efffx"), output = Path.Combine(work, "build.efffxbuild");
+    Directory.CreateDirectory(work);
+    EiemEffectAuthorCommand.Create(donor, args[2], source, args[3]);
+    var catalog = JObject.Parse(File.ReadAllText(Path.Combine(source, "effect.json")));
+    var baseline = JObject.Parse(File.ReadAllText(Path.Combine(source, "source/manifest.json")));
+    Check(catalog["hierarchy"].Count() == 1 && catalog["objects"].Count() == 5,
+        "blank author Prefab contains only its root, Transform, particle, renderer and bundle records");
+    Check((int)baseline["serializedFiles"].Count() == 1 && baseline["closure"].Count() == 0 &&
+        baseline["serializedFiles"][0]["objects"].Count() == 5 && baseline["serializedFiles"][0]["externals"].Count() == 0,
+        "blank author baseline has no donor game objects or external resource snapshots");
+    var initialEdit = new JObject
+    {
+        ["format"] = "EFF_EFFECT_EDIT", ["version"] = 1,
+        ["sourceManifestSha256"] = EiemEffectBuildCommand.Hash(File.ReadAllBytes(Path.Combine(source, "source/manifest.json"))),
+        ["sourceEffectSha256"] = EiemEffectBuildCommand.Hash(File.ReadAllBytes(Path.Combine(source, "effect.json"))),
+        ["objects"] = new JArray(), ["assets"] = new JArray(),
+        ["emitters"] = new JObject { ["added"] = new JArray(), ["removed"] = new JArray() }
+    };
+    string initialEditPath = Path.Combine(work, "initial.effedit.json");
+    File.WriteAllText(initialEditPath, initialEdit.ToString());
+    string initialOutput = Path.Combine(work, "initial-build.efffxbuild");
+    EiemEffectBuildCommand.Build(source, initialEditPath, initialOutput);
+    Check(File.Exists(Path.Combine(initialOutput, "runtime.bin")) &&
+        Directory.GetFiles(Path.Combine(initialOutput, "runtime/bundles"), "*.ab").Length == 1,
+        "unmodified blank author source still builds its first runtime PFB candidate");
+    var authoredParticle = catalog["objects"].Single(row => (int)row["classId"] == 198);
+    string particlePath = Path.Combine(source, ((string)authoredParticle["data"]).Replace('/', Path.DirectorySeparatorChar));
+    byte[] particleBytes = File.ReadAllBytes(particlePath);
+    var particleData = JObject.Parse(Encoding.UTF8.GetString(particleBytes));
+    particleData["lengthInSec"] = 6.0;
+    var edit = new JObject
+    {
+        ["format"] = "EFF_EFFECT_EDIT", ["version"] = 1,
+        ["sourceManifestSha256"] = EiemEffectBuildCommand.Hash(File.ReadAllBytes(Path.Combine(source, "source/manifest.json"))),
+        ["sourceEffectSha256"] = EiemEffectBuildCommand.Hash(File.ReadAllBytes(Path.Combine(source, "effect.json"))),
+        ["objects"] = new JArray(new JObject
+        {
+            ["identity"] = (string)authoredParticle["identity"], ["sourceDataSha256"] = EiemEffectBuildCommand.Hash(particleBytes),
+            ["data"] = particleData
+        })
+    };
+    string editPath = Path.Combine(work, "edit.effedit.json");
+    File.WriteAllText(editPath, edit.ToString());
+    EiemEffectBuildCommand.Build(source, editPath, output);
+    Check(JObject.Parse(File.ReadAllText(Path.Combine(output, "build.json"))) is JObject receipt &&
+        (bool)receipt["offlineVerified"] && !(bool)receipt["gameVerified"],
+        "blank author Prefab builds a strictly offline native package");
+
+    using var packet = new BinaryReader(File.OpenRead(Path.Combine(output, "runtime.bin")), Encoding.UTF8);
+    string PacketString()
+    {
+        ulong length = packet.ReadUInt64();
+        if (length > 1024 * 1024) throw new InvalidDataException("Oversized runtime packet string");
+        return Encoding.UTF8.GetString(packet.ReadBytes((int)length));
+    }
+    Check(PacketString() == "EFF_EFFECT_DEBUG_NATIVE/inactive-root+le64", "blank author Prefab emits the native runtime packet");
+    _ = PacketString();
+    Check(PacketString() == args[2] && PacketString() == args[3], "runtime packet retains target Prefab and root name");
+    _ = packet.ReadUInt64();
+    Check(packet.ReadUInt64() == 1 && packet.ReadUInt64() == 1, "runtime packet points to one root bundle and one particle system");
+
+    var runtimeManager = new AssetsManager { Game = GameManager.GetGameByType(GameType.ArknightsEndfield) };
+    JObject runtimeParticle = null, runtimeBundle = null, runtimeRoot = null, runtimeTransform = null;
+    int runtimeObjectCount = 0;
+    foreach (string bundlePath in Directory.GetFiles(Path.Combine(output, "runtime/bundles"), "*.ab"))
+    {
+        using var archiveReader = new FileReader(bundlePath, new MemoryStream(File.ReadAllBytes(bundlePath), false));
+        var archive = new VFSFile(archiveReader, bundlePath, GameType.ArknightsEndfield);
+        foreach (var member in archive.fileList)
+        {
+            using var buffer = new MemoryStream(); member.stream.CopyTo(buffer); member.stream.Dispose();
+            if (member.fileName.EndsWith(".resS", StringComparison.OrdinalIgnoreCase)) continue;
+            byte[] bytes = buffer.ToArray();
+            using var nativeReader = new FileReader(member.fileName, new MemoryStream(bytes, false));
+            var runtimeFile = new SerializedFile(nativeReader, runtimeManager);
+            runtimeObjectCount += runtimeFile.m_Objects.Count;
+            foreach (var row in runtimeFile.m_Objects)
+            {
+                var data = new TypeTreeDocument(row.serializedType.m_Type,
+                    bytes.AsSpan((int)row.byteStart, (int)row.byteSize).ToArray(), runtimeFile.m_RefTypes).Root.ToJson() as JObject;
+                if (row.classID == 1 && (string)data["m_Name"] == args[3]) runtimeRoot = data;
+                if (row.classID == 4) runtimeTransform = data;
+                if (row.classID == 198) runtimeParticle = data;
+                if (row.classID == 142) runtimeBundle = data;
+            }
+        }
+    }
+    Check(runtimeObjectCount == 5 && runtimeRoot?["m_Component"]?.Count() == 3,
+        "native runtime archive reparses the five-object graph and root component list");
+    Check((double)runtimeParticle?["lengthInSec"] == 6.0 &&
+        JToken.DeepEquals(runtimeParticle?["m_GameObject"], runtimeTransform?["m_GameObject"]),
+        "edited particle payload survives native bundle build");
+    Check((string)runtimeBundle?["m_Container"]?[0]?["first"] == args[2] &&
+        (long)runtimeBundle["m_Container"][0]["second"]["preloadSize"] == 4 &&
+        runtimeBundle["m_PreloadTable"].Count() == 4,
+        "AssetBundle container points at the target logical Prefab with its complete preload table");
+    Check((long)runtimeBundle["m_Container"][0]["second"]["asset"]["m_PathID"] == 1 &&
+        runtimeBundle["m_PreloadTable"].Select(row => (long)row["m_PathID"]).Order().SequenceEqual(new long[] { 1, 2, 3, 4 }),
+        "AssetBundle points to the authored root and preloads exactly its object graph");
+    Console.WriteLine($"PASS blank effect author loop: {assertions} assertions, one author CAB, five objects, no game dependency snapshots");
+    return;
+}
 TypeTree Tree(params (string Type, string Name, int Level, bool Align)[] rows) =>
     new() { m_Nodes = rows.Select(r => new TypeTreeNode(r.Type, r.Name, r.Level, r.Align)).ToList() };
 byte[] Raw(Action<BinaryWriter> action)
@@ -112,6 +274,16 @@ var byteTree = Tree(("vector", "bytes", 0, false), ("Array", "Array", 1, true), 
 var byteDoc = new TypeTreeDocument(byteTree, new byte[] { 3,0,0,0, 1,2,3, 91 });
 Check((string)byteDoc.Root.ToJson()["encoding"] == "base64", "byte arrays are tagged");
 Check(byteDoc.Encode().Last() == 91, "byte array padding retained");
+var blankSimple = TypeTreeDocument.CreateDefault(simple);
+Check((float)blankSimple.Root["n"].Scalar == 0f && !(bool)blankSimple.Root["enabled"].Scalar &&
+      blankSimple.Root["pointers"].Array.Items.Count == 0 && (string)blankSimple.Root["name"].Scalar == "",
+      "new native object defaults are initialized from TypeTree");
+Check(new TypeTreeDocument(simple, blankSimple.Encode()).Encode().SequenceEqual(blankSimple.Encode()),
+      "new native object payload reparses without a source object");
+var blankBytes = TypeTreeDocument.CreateDefault(byteTree);
+Check(blankBytes.Root.Array.Scalar is byte[] emptyBytes && emptyBytes.Length == 0 &&
+      new TypeTreeDocument(byteTree, blankBytes.Encode()).Root.Array.Scalar is byte[] reparsedBytes && reparsedBytes.Length == 0,
+      "new raw buffers default to empty inline data");
 
 var registry = Tree(("ManagedReferencesRegistry", "references", 0, false), ("int", "version", 1, false),
     ("vector", "RefIds", 1, false), ("Array", "Array", 2, true), ("int", "size", 3, false),
@@ -137,6 +309,10 @@ var badVersion = managedRaw.ToArray(); BitConverter.GetBytes(1).CopyTo(badVersio
 Reject(() => new TypeTreeDocument(registry, badVersion, new[] { refType }), "unsupported managed registry");
 var nullManaged = Raw(w => { w.Write(2); w.Write(1); w.Write(-2L); Text(w, ""); Text(w, ""); Text(w, ""); });
 Check(new TypeTreeDocument(registry, nullManaged).Encode().SequenceEqual(nullManaged), "managed null marker");
+var blankRegistry = TypeTreeDocument.CreateDefault(registry);
+Check((int)blankRegistry.Root["version"].Scalar == 2 && blankRegistry.Root["RefIds"].Array.Items.Count == 0 &&
+      new TypeTreeDocument(registry, blankRegistry.Encode()).Encode().SequenceEqual(blankRegistry.Encode()),
+      "new managed-reference registry has valid empty defaults");
 
 T Blank<T>() => (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
 {
@@ -217,6 +393,23 @@ finally { if (Directory.Exists(temp)) Directory.Delete(temp, true); }
 
 TypeTree FixtureTree(JToken nodes) => new() { m_Nodes = nodes.Select(n => new TypeTreeNode((string)n["type"], (string)n["name"], (int)n["level"], false)
     { m_MetaFlag = (int)n["metaFlag"], m_ByteSize = (int)n["byteSize"], m_Version = (int)n["version"] }).ToList() };
+if (args.Length == 2 && args[0] == "--default-effect-types")
+{
+    string source = Path.GetFullPath(args[1]);
+    var catalog = JObject.Parse(File.ReadAllText(Path.Combine(source, "effect.json")));
+    foreach (var (classId, label) in new[] { (1, "GameObject"), (4, "Transform"), (198, "ParticleSystem"), (199, "ParticleSystemRenderer") })
+    {
+        var spec = catalog["objects"].First(o => (int)o["classId"] == classId && (string)o["state"] == "parsed");
+        var schema = JObject.Parse(File.ReadAllText(Path.Combine(source, (string)spec["schema"])));
+        var tree = FixtureTree(schema["nodes"]);
+        var created = TypeTreeDocument.CreateDefault(tree);
+        var decoded = new TypeTreeDocument(tree, created.Encode());
+        Check(decoded.Encode().SequenceEqual(created.Encode()), label + " real TypeTree default payload roundtrip");
+        Console.WriteLine($"PASS source-free {label} native payload: {created.Encode().Length} bytes");
+    }
+    Console.WriteLine($"PASS: {assertions} real TypeTree assertions");
+    return;
+}
 if (args.Length == 3 && args[0] == "--lod-coverage")
 {
     string source = Path.GetFullPath(args[1]), destination = Path.GetFullPath(args[2]);
@@ -495,9 +688,11 @@ if (args.Length == 4 && args[0] == "--authored-assets")
             else if(row.classID==28)
             {
                 var texture=new Texture2D(objectReader);
-                Check(texture.m_Width==4 && texture.m_Height==2 && texture.m_TextureFormat==TextureFormat.RGBA32,"native Texture2D reads author dimensions/format");
+                Check(texture.m_Width==4 && texture.m_Height==2 &&
+                    texture.m_TextureFormat is (TextureFormat.RGBA32 or TextureFormat.BC5 or TextureFormat.BC7),
+                    "native Texture2D reads author dimensions and RGBA32/BC5/BC7 format");
                 using var bitmap=texture.ConvertToImage(true);
-                Check(bitmap!=null,"native texture decoder accepts inline author RGBA");textures++;
+                Check(bitmap!=null,"native texture decoder accepts inline author RGBA/BCn");textures++;
             }
             else if(row.classID==21)
             {
@@ -599,7 +794,8 @@ if (args.Length == 4 && args[0] == "--emitters")
         if(kind==198)
         {
             Check(Math.Abs((double)data["InitialModule"]["startRotation"]["scalar"]-(double)row["data"]["InitialModule"]["startRotation"]["scalar"])<1e-6,"degree controls exported native radians");
-            Check(JToken.DeepEquals(data["EmissionModule"]["m_Bursts"],row["data"]["EmissionModule"]["m_Bursts"]),"new emitter bursts decoded");
+            Check(JToken.DeepEquals(JToken.Parse(data["EmissionModule"]["m_Bursts"].ToString()),
+                JToken.Parse(row["data"]["EmissionModule"]["m_Bursts"].ToString())),"new emitter bursts decoded");
             Check((bool)data["looping"]==(bool)row["data"]["looping"],"new emitter loop decoded");
             var spec=(JObject)specs[(string)row["template"]].DeepClone();spec["identity"]=id;spec["owner"]=Target(id,data["m_GameObject"]);
             ((JArray)effective["objects"]).Add(spec);

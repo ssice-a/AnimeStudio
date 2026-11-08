@@ -109,17 +109,86 @@ public sealed class TypeTreeDocument
     private int position;
     public Value Root { get; private set; }
 
-    public TypeTreeDocument(TypeTree tree, byte[] bytes, IEnumerable<SerializedType> referencedTypes = null)
+    private TypeTreeDocument(IEnumerable<SerializedType> referencedTypes)
     {
-        this.bytes = bytes ?? throw new ArgumentNullException(nameof(bytes));
+        bytes = System.Array.Empty<byte>();
         foreach (var type in referencedTypes ?? Enumerable.Empty<SerializedType>())
         {
             if (type.m_Type?.m_Nodes?.Count > 0 && !referenceTypes.TryAdd((type.m_KlassName, type.m_NameSpace, type.m_AsmName), Schema.Compile(type.m_Type)))
                 throw new InvalidDataException("Duplicate managed reference type");
         }
+    }
+
+    public TypeTreeDocument(TypeTree tree, byte[] bytes, IEnumerable<SerializedType> referencedTypes = null)
+        : this(referencedTypes)
+    {
+        this.bytes = bytes ?? throw new ArgumentNullException(nameof(bytes));
         Root = Read(Schema.Compile(tree), null);
         if (position != bytes.Length) throw new InvalidDataException($"TypeTree consumed {position}/{bytes.Length} bytes");
         if (!Encode().AsSpan().SequenceEqual(bytes)) throw new InvalidDataException("Unchanged TypeTree roundtrip differs");
+    }
+
+    /// <summary>Build a native object payload from a known TypeTree without a source object.</summary>
+    public static TypeTreeDocument CreateDefault(TypeTree tree, IEnumerable<SerializedType> referencedTypes = null)
+    {
+        var references = referencedTypes?.ToArray() ?? System.Array.Empty<SerializedType>();
+        var result = new TypeTreeDocument(references);
+        result.Root = DefaultValue(Schema.Compile(tree), null);
+        byte[] bytes = result.Encode();
+        return new TypeTreeDocument(tree, bytes, references);
+    }
+
+    private static Value DefaultValue(Schema schema, Value parent)
+    {
+        var value = new Value { Schema = schema };
+        int primitiveSize = PrimitiveSize(schema.Type);
+        if (primitiveSize != 0)
+        {
+            value.Scalar = schema.Type switch
+            {
+                "bool" => false,
+                "SInt8" => (sbyte)0,
+                "char" or "UInt8" => (byte)0,
+                "short" or "SInt16" => (short)0,
+                "UInt16" or "unsigned short" => (ushort)0,
+                "UInt32" or "unsigned int" or "Type*" => (uint)0,
+                "long long" or "SInt64" => (long)0,
+                "UInt64" or "unsigned long long" or "FileSize" => (ulong)0,
+                "float" => 0f,
+                "double" => 0d,
+                _ => 0
+            };
+            if (schema.Name == "rid" && parent?.Schema.Type == "ReferencedObject") value.Scalar = -2L;
+        }
+        else if (schema.Type == "string") value.Scalar = "";
+        else if (schema.Type == "TypelessData") value.Scalar = System.Array.Empty<byte>();
+        else if (schema.Type == "Array")
+        {
+            if (schema.Children.Count != 2 || schema.Children[0].Name != "size")
+                throw new InvalidDataException("Invalid TypeTree array: " + schema.Name);
+            if ((schema.Children[1].Type is "UInt8" or "char") && !schema.Children[1].Aligned)
+                value.Scalar = System.Array.Empty<byte>();
+        }
+        else if (schema.Type == "ReferencedObjectData")
+        {
+            if (parent == null || !parent.Fields.TryGetValue("type", out var type) ||
+                !parent.Fields.TryGetValue("rid", out var rid) || !string.IsNullOrEmpty((string)type["class"].Scalar) ||
+                Convert.ToInt64(rid.Scalar) is not (-1 or -2))
+                throw new InvalidDataException("Cannot create a non-null managed reference without a native template");
+            value.EmptyManagedData = true;
+        }
+        else
+        {
+            if (schema.Children.Count == 0) throw new InvalidDataException("Unsupported TypeTree leaf: " + schema.Type);
+            foreach (var child in schema.Children)
+            {
+                var childValue = DefaultValue(child, value);
+                if (!value.Fields.TryAdd(child.Name, childValue)) throw new InvalidDataException("Duplicate TypeTree field: " + child.Name);
+            }
+            if (schema.Type == "ManagedReferencesRegistry" && value.Fields.TryGetValue("version", out var version))
+                version.Scalar = 2;
+        }
+        return value;
     }
 
     private byte[] Take(int count)
