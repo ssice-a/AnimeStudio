@@ -14,6 +14,14 @@ namespace AnimeStudio.GUI
         [STAThread]
         static void Main(string[] args)
         {
+            if (args?.Length > 0 && args[0] == "--describe-eff-effect-inputs")
+            {
+                Environment.ExitCode = EiemEffectGameReferenceInputs.Run(args); return;
+            }
+            if (args?.Length > 0 && args[0] == "--build-eff-animation")
+            {
+                Environment.ExitCode = EiemAnimationBuildCommand.Run(args); return;
+            }
             if (args?.Length > 0 && string.Equals(args[0], "--build-eff-effects", StringComparison.OrdinalIgnoreCase))
             {
                 Environment.ExitCode = EiemEffectBuildCommand.Run(args); return;

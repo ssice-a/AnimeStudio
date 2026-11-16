@@ -87,8 +87,9 @@ internal static class EiemEffectAuthorCommand
         var components = new[] { (Id: transformId, ClassId: 4), (Id: particleId, ClassId: 198), (Id: rendererId, ClassId: 199) };
         var authored = new List<NativeSpec>();
 
-        TypeTreeDocument Document(int classId) => TypeTreeDocument.CreateDefault(
-            donorFile.m_Types[typeIds[classId]].m_Type, donorFile.m_RefTypes);
+        TypeTreeDocument Document(int classId) => classId == 142
+            ? EiemEffectPrefabWriter.CreateBundle(donorFile.m_Types[typeIds[classId]].m_Type)
+            : TypeTreeDocument.CreateDefault(donorFile.m_Types[typeIds[classId]].m_Type, donorFile.m_RefTypes);
         TypeTreeDocument Add(int classId, long id, string name, string owner, Action<JObject> initialize)
         {
             var doc = Document(classId);

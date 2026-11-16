@@ -77,9 +77,20 @@ internal static class EiemEffectBuildCommand
                     throw new InvalidDataException("Effect rebuild supports complete little-endian v22 sources");
                 nativeFiles.Add(file.fileName, (file, bytes, row));
             }
+            var selection = EiemEffectSelection.Prepare(edits, effect, objects);
+            var gameTypes = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var gameLeases = EiemEffectGameReferences.Apply(edits, baseline, nativeFiles, objects, opened, gameTypes);
+            var authorLeases = EiemEffectAuthorReferences.Apply(edits, nativeFiles, objects, opened, gameTypes);
+            // Appending game dependencies can grow metadata and move every
+            // payload. Capture row offsets from the updated native files.
+            var nativeObjectRows = nativeFiles.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.File.m_Objects.ToDictionary(row => row.m_PathID),
+                StringComparer.OrdinalIgnoreCase);
             var authored = EiemEffectAssetEdits.Read(edits["assets"], objects, nativeFiles);
-            var emitters = new EiemEffectEmitterEdits(edits["emitters"], effect, objects, nativeFiles);
+            var emitters = new EiemEffectEmitterEdits(edits["emitters"], effect, objects, nativeFiles, selection);
             var authoredTypes = authored.ToDictionary(a => a.Identity, a => a.ClassId, StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in gameTypes) authoredTypes.Add(pair.Key, pair.Value);
             foreach (var pair in emitters.Types)
                 if (!authoredTypes.TryAdd(pair.Key, pair.Value))throw new InvalidDataException("Emitter identity collides with authored resource");
             var validationFiles = nativeFiles.ToDictionary(p => p.Key, p => p.Value.File, StringComparer.OrdinalIgnoreCase);
@@ -101,7 +112,8 @@ internal static class EiemEffectBuildCommand
                 var dataBytes = File.ReadAllBytes(SafePath(source, (string)obj["data"]));
                 if (!string.Equals(Hash(dataBytes), (string)edit["sourceDataSha256"], StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Edited object baseline changed: " + identity);
                 var owner = nativeFiles[(string)obj["native"]["cab"]];
-                var row = owner.File.m_Objects.Single(r => r.m_PathID == (long)obj["native"]["pathId"]);
+                if (!nativeObjectRows[owner.File.fileName].TryGetValue((long)obj["native"]["pathId"], out var row))
+                    throw new InvalidDataException("Edited native object is missing: " + identity);
                 byte[] original = owner.Bytes.AsSpan(checked((int)row.byteStart), checked((int)row.byteSize)).ToArray();
                 var document = new TypeTreeDocument(row.serializedType.m_Type, original, owner.File.m_RefTypes);
                 // JSON decimal text is rounded to the native scalar width before
@@ -116,6 +128,7 @@ internal static class EiemEffectBuildCommand
                 replacements.Add(row.m_PathID, result);
             }
             emitters.Apply(changed);
+            EiemEffectSelection.Apply(edits["emitterScope"], effect, nativeFiles, changed, authored);
             var products = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
             foreach (var pair in changed)
             {
@@ -126,17 +139,19 @@ internal static class EiemEffectBuildCommand
                 using var checkReader = new FileReader(pair.Key, new MemoryStream(rebuilt, false));
                 var check = new SerializedFile(checkReader, manager);
                 if (check.m_Objects.Count != original.File.m_Objects.Count + added.Length) throw new InvalidDataException("Rebuild object count differs");
+                var addedById = added.ToDictionary(asset => asset.Id);
+                var originalById = original.File.m_Objects.ToDictionary(row => row.m_PathID);
                 foreach (var row in check.m_Objects)
                 {
-                    var asset = added.SingleOrDefault(a => a.Id == row.m_PathID);
-                    if (asset != null)
+                    if (addedById.TryGetValue(row.m_PathID, out var asset))
                     {
                         if (row.typeID != asset.Type || !rebuilt.AsSpan((int)row.byteStart, (int)row.byteSize).SequenceEqual(asset.Payload))
                             throw new InvalidDataException("Authored resource native roundtrip mismatch");
                         _ = new TypeTreeDocument(row.serializedType.m_Type, asset.Payload, check.m_RefTypes);
                         continue;
                     }
-                    var prior = original.File.m_Objects.Single(r => r.m_PathID == row.m_PathID);
+                    if (!originalById.TryGetValue(row.m_PathID, out var prior))
+                        throw new InvalidDataException("Rebuilt native object is missing from its source: " + row.m_PathID);
                     var expected = pair.Value.TryGetValue(row.m_PathID, out var replacement) ? replacement : original.Bytes.AsSpan((int)prior.byteStart, (int)prior.byteSize).ToArray();
                     if (row.typeID != prior.typeID || !rebuilt.AsSpan((int)row.byteStart, (int)row.byteSize).SequenceEqual(expected)) throw new InvalidDataException("Native rebuild object mismatch");
                     if (replacement != null) _ = new TypeTreeDocument(row.serializedType.m_Type, replacement, check.m_RefTypes);
@@ -147,7 +162,8 @@ internal static class EiemEffectBuildCommand
             {
                 Directory.CreateDirectory(Path.Combine(staged, "native")); Directory.CreateDirectory(Path.Combine(staged, "bundles")); Directory.CreateDirectory(Path.Combine(staged, "source"));
                 foreach (var product in products) File.WriteAllBytes(Path.Combine(staged, "native", EiemPackageIdentity.SnapshotFileName(product.Key)), product.Value);
-                EiemEffectRuntimeWriter.Write(staged, source, baseline, effect, nativeFiles, products, allLods);
+                EiemEffectRuntimeWriter.Write(staged, source, baseline, effect, nativeFiles, products, allLods, gameLeases, authorLeases);
+                var authorMeshes = EiemEffectAuthorMeshes.Write(staged, edits["authorMeshes"], objects, nativeFiles);
                 var bundles = new List<object>();
                 foreach (var group in products.Keys.Select(cab => (string)nativeFiles[cab].Row["sourceBundle"]).Distinct(StringComparer.OrdinalIgnoreCase))
                 {
@@ -176,7 +192,8 @@ internal static class EiemEffectBuildCommand
                     sourceManifestSha256 = Hash(baselineBytes), sourceEffectSha256 = Hash(effectBytes),
                     changedObjects = changed.Sum(p => p.Value.Count), addedAssets = authored.Count,
                     nativeFiles = products.Select(p => new { cab = p.Key, file = "native/" + EiemPackageIdentity.SnapshotFileName(p.Key), sha256 = Hash(p.Value), size = p.Value.Length }),
-                    bundles, offlineVerified = true, gameVerified = false, installed = false };
+                    bundles, gameResources = gameLeases, authorResources = authorLeases, authorMeshes,
+                    offlineVerified = true, gameVerified = false, installed = false };
                 string json = JsonConvert.SerializeObject(receipt, Formatting.Indented);
                 File.WriteAllText(Path.Combine(staged, "build.json"), json); File.WriteAllText(Path.Combine(staged, "source/manifest.json"), json);
                 if (!File.ReadAllBytes(SafePath(source, "source/manifest.json")).AsSpan().SequenceEqual(baselineBytes) ||

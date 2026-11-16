@@ -54,6 +54,23 @@ internal static class EndfieldSharedIndexes
         }
     }
 
+    internal static IEnumerable<string> GamesForWorkspace(string workspace)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in Read())
+        {
+            string game;
+            try
+            {
+                if (entry == null || string.IsNullOrWhiteSpace(entry.Workspace) || string.IsNullOrWhiteSpace(entry.Game) ||
+                    Normalize(WorkspacePath(entry.Workspace)) != Normalize(WorkspacePath(workspace))) continue;
+                game = Path.GetFullPath(entry.Game);
+            }
+            catch (ArgumentException) { continue; }
+            if (seen.Add(game)) yield return game;
+        }
+    }
+
     internal static string DefaultWorkspace(string game)
     {
         var resourceRoot = EndfieldSharedResources.ResourceRoot;

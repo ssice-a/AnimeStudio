@@ -145,6 +145,14 @@ namespace AnimeStudio.GUI
 
         public void VerifyCurrent()
         {
+            if (ReadFingerprint(GameDirectory ?? VfsRoot, layerOnly: GameDirectory == null) != Fingerprint)
+                throw new InvalidDataException("Installed VFS changed while it was open. Reopen the game folder after the update finishes.");
+        }
+
+        // Metadata-only identity check: avoid decrypting and materializing
+        // the complete BLC asset table for every cached effect export.
+        internal static string ReadFingerprint(string selectedPath, bool layerOnly = false)
+        {
             EndfieldVfsArchive Metadata(string root)
             {
                 var files = Directory.EnumerateFiles(root, "*.blc", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -153,15 +161,17 @@ namespace AnimeStudio.GUI
                 return result;
             }
             string current;
-            if (GameDirectory == null) current = Metadata(VfsRoot).Fingerprint;
+            var resolved = layerOnly ? Path.GetFullPath(selectedPath) : ResolveSelection(selectedPath);
+            var baseRoot = Path.Combine(resolved, "Endfield_Data", "StreamingAssets", "VFS");
+            if (layerOnly || !Directory.Exists(baseRoot)) current = Metadata(resolved).Fingerprint;
             else
             {
-                var shipped = Metadata(Path.Combine(GameDirectory, "Endfield_Data", "StreamingAssets", "VFS"));
-                var hotRoot = Path.Combine(GameDirectory, "Endfield_Data", "Persistent", "VFS");
+                var shipped = Metadata(baseRoot);
+                var hotRoot = Path.Combine(resolved, "Endfield_Data", "Persistent", "VFS");
                 var hot = Directory.Exists(hotRoot) && Directory.EnumerateFiles(hotRoot, "*.blc", SearchOption.AllDirectories).Any() ? Metadata(hotRoot) : null;
                 current = LayerIdentity(shipped, hot);
             }
-            if (current != Fingerprint) throw new InvalidDataException("Installed VFS changed while it was open. Reopen the game folder after the update finishes.");
+            return current;
         }
 
         private static bool SameContent(EndfieldVfsEntry a, EndfieldVfsEntry b) => a.Length == b.Length && a.FileDataMd5 == b.FileDataMd5;

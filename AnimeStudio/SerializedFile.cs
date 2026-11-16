@@ -33,6 +33,8 @@ namespace AnimeStudio
         public long ObjectTableStart { get; private set; }
         public long ObjectCountOffset { get; private set; }
         public long ObjectTableEnd { get; private set; }
+        public long ExternalTableStart { get; private set; }
+        public long ExternalTableEnd { get; private set; }
         public List<(long Offset, string Path)> ExternalPathSites { get; } = new();
         private List<LocalSerializedObjectIdentifier> m_ScriptTypes;
         public List<FileIdentifier> m_Externals;
@@ -209,6 +211,7 @@ namespace AnimeStudio
                 }
             }
 
+            ExternalTableStart = reader.Position;
             int externalsCount = reader.ReadInt32();
             m_Externals = new List<FileIdentifier>();
             Logger.Verbose($"Found {externalsCount} externals");
@@ -232,6 +235,7 @@ namespace AnimeStudio
                 m_Externals.Add(m_External);
             }
 
+            ExternalTableEnd = reader.Position;
             if (header.m_Version >= SerializedFileFormatVersion.SupportsRefObject)
             {
                 int refTypesCount = reader.ReadInt32();

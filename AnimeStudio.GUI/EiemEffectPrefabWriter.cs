@@ -1,4 +1,5 @@
 using AnimeStudio;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -11,6 +12,21 @@ namespace AnimeStudio.GUI;
 internal static class EiemEffectPrefabWriter
 {
     internal sealed record NativeObject(long PathId, int TypeId, byte[] Payload);
+
+    internal static TypeTreeDocument CreateBundle(TypeTree schema)
+    {
+        var document = TypeTreeDocument.CreateDefault(schema);
+        if (document.Root.Schema.Type != "AssetBundle")
+            throw new InvalidDataException("Expected AssetBundle TypeTree");
+        var data = (JObject)document.Root.ToJson();
+        if (data["m_RuntimeCompatibility"]?.Type != JTokenType.Integer)
+            throw new InvalidDataException("AssetBundle runtime compatibility field is missing");
+        // The engine rejects 0 before returning the Bundle. A zero-filled
+        // TypeTree value is not the runtime constructor's valid default.
+        data["m_RuntimeCompatibility"] = 1;
+        document.ApplyJson(data);
+        return document;
+    }
 
     internal static byte[] CreateMetadataOnly(SerializedFile file, byte[] original)
     {
@@ -59,6 +75,13 @@ internal static class EiemEffectPrefabWriter
                           o.TypeId < 0 || o.TypeId >= template.m_Types.Count) ||
             rows.Select(o => o.PathId).Distinct().Count() != rows.Length)
             throw new InvalidDataException("Invalid authored SerializedFile object table");
+
+        foreach (var row in rows.Where(o => template.m_Types[o.TypeId].classID == 142))
+        {
+            var bundle = new TypeTreeDocument(template.m_Types[row.TypeId].m_Type, row.Payload);
+            if (Convert.ToUInt32(bundle.Root["m_RuntimeCompatibility"].Scalar) < 1)
+                throw new InvalidDataException("Authored AssetBundle runtime compatibility must be at least 1");
+        }
 
         using var metadata = new MemoryStream();
         metadata.Write(metadataOnly, 48, checked((int)template.ObjectCountOffset - 48));

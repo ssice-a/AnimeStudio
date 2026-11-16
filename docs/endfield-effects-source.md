@@ -12,7 +12,7 @@ GUI：打开 Endfield 游戏目录和当前工作区，在 Logical Asset Paths �
 AnimeStudio.GUI.exe --export-eff-effects '<游戏或VFS目录>' '<工作区>' 'assets/beyond/.../effect.prefab' '<输出目录>'
 ```
 
-从空白创建作者特效：先选中一个已导入且带有来源证明的游戏 Mesh，再从 Blender 的 **文件 → 导入 → EFF 特效：从空白创建** 中选择同游戏版本的 `.efffx` 作为 TypeTree donor，填写根名称和输出目录。向导从 Mesh 来源证明读取目标 Prefab，并在创建后验证 Renderer 挂载证明。AnimeStudio 只读取 donor 的类型树，不复制 donor 的 Prefab 对象、Bundle 依赖、Mesh、Material 或 Texture；生成独立作者对象图和空材质的粒子 Renderer。也可从命令行运行：
+从空白创建作者特效：先在 Blender 中添加一个 Empty，在 **Object Properties → EFF 特效 · 创建根** 打开向导；选择同游戏版本的 `.efffx` 作为 TypeTree donor，并指定已有来源证明的目标 Mesh、根名称和输出目录。创建后该 Empty 本身就是特效根，之后可在根属性内添加发射器。向导从 Mesh 来源证明读取目标 Prefab，并在创建后验证 Renderer 挂载证明。AnimeStudio 只读取 donor 的类型树，不复制 donor 的 Prefab 对象、Bundle 依赖、Mesh、Material 或 Texture；生成独立作者对象图和空材质的粒子 Renderer。也可从命令行运行：
 
 ```powershell
 AnimeStudio.GUI.exe --create-eff-effect '<schema-donor.efffx目录>' 'assets/beyond/.../effect.prefab' '<输出.efffx目录>' 'My Effect'

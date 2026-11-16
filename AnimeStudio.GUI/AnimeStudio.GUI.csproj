@@ -17,6 +17,10 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<EmbeddedResource Include="Resources\animation-schema.bin" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\AnimeStudio.Utility\AnimeStudio.Utility.csproj" />
 		<ProjectReference Include="..\AnimeStudio\AnimeStudio.csproj" />
 	</ItemGroup>

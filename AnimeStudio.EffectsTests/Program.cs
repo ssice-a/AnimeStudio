@@ -8,6 +8,28 @@ using AssetObject = AnimeStudio.Object;
 
 Logger.Silent = true;
 Progress.Silent = true;
+if (args.Length == 4 && args[0] == "--logical-reference-relocation")
+{
+    EffectLogicalReferenceChecks.Run(args[1],args[2],args[3]);return;
+}
+if (args.Length == 4 && args[0] == "--runtime-closure")
+{
+    EffectRuntimeClosureChecks.Run(args[1], args[2], args[3]); return;
+}
+if (args.Length == 4 && args[0] == "--selection")
+{
+    EffectSelectionChecks.Run(args[1], args[2], args[3]);return;
+}
+if (args.Length == 4 && args[0] == "--native-mod-animation")
+{
+    NativeAnimationModChecks.Run(args[1], args[2], args[3]);
+    return;
+}
+if (args.Length == 3 && args[0] == "--native-animation-clip")
+{
+    NativeAnimationClipChecks.Run(args[1], args[2]);
+    return;
+}
 if (args.Length >= 3 && args[0] is "--inspect-particles" or "--inspect-effect-components")
 {
     var manager = new AssetsManager { Game = GameManager.GetGameByType(GameType.ArknightsEndfield) };
@@ -66,6 +88,63 @@ void Reject(Action action, string label)
     try { action(); } catch (InvalidDataException) { return; }
     throw new Exception("Expected rejection: " + label);
 }
+GameReferenceInputsChecks.Run(Check, Reject);
+{
+    // A cold author export is independent of the global game index and donor
+    // preview directories. Imported bindings include the selected native target.
+    var baseline = new JObject { ["sourceIndex"] = "missing-export-index.eidx" };
+    var binding = new JObject { ["owner"] = "local:1", ["field"] = "$.m_Texture",
+        ["path"] = "assets/game/star.png", ["asset"] = "Star", ["type"] = "Texture",
+        ["sourcePrefab"] = "assets/game/effect.prefab", ["sourceRoot"] = "Root",
+        ["resourceIdentity"] = "CAB-22222222222222222222222222222222:7", ["resourceClassId"] = 28 };
+    var refs = new JArray(binding);var objects = new Dictionary<string,JToken>();
+    var selected = EiemEffectGameReferences.Imported(refs, baseline, objects);
+    Check(selected.Targets.Single().Value.Id == 1 && selected.Leases.Count == 1 &&
+        (string)selected.Leases.Single()["relocationCab"] == selected.Targets.Single().Value.Cab &&
+        selected.Targets.Single().Value.Cab != "CAB-22222222222222222222222222222222",
+        "cold native compilation uses imported references with no game index or donor");
+    binding["type"] = "Mesh";
+    Reject(() => EiemEffectGameReferences.Imported(refs, baseline, objects), "portable binding native class must match the PPtr type");
+    binding["type"] = "Texture";binding.Remove("resourceIdentity");binding.Remove("resourceClassId");
+    var deferred = EiemEffectGameReferences.Imported(refs, baseline, objects);
+    Check(deferred.Targets.Single().Value.Class == 28 && deferred.Targets.Single().Value.Id == 1 &&
+        (string)deferred.Leases.Single()["relocationCab"] == deferred.Targets.Single().Value.Cab,
+        "new logical paths compile to runtime slots without discovering an offline index");
+    binding.Remove("sourceRoot");
+    Check((string)EiemEffectGameReferences.Imported(refs, baseline, objects).Leases.Single()["sourcePrefab"] == "assets/game/effect.prefab",
+        "source Prefab logical path does not require a local source directory or root name");
+    binding["resourceIdentity"] = "CAB-22222222222222222222222222222222:7";binding["resourceClassId"] = 28;
+    binding.Remove("sourcePrefab");binding.Remove("sourceRoot");
+    Reject(() => EiemEffectGameReferences.Imported(refs, baseline, objects), "native target requires a game-owned source lease");
+}
+{
+    string cab = "CAB-11111111111111111111111111111111";
+    var spec = JObject.Parse("{\"classId\":21,\"native\":{\"cab\":\"" + cab + "\"}}");
+    var objects = new Dictionary<string,JToken> { [cab + ":7"] = spec };
+    var edits = new JObject { ["assets"] = new JArray(new JObject { ["identity"]=cab+":8", ["template"]=cab+":7" }) };
+    Check(EiemEffectGameReferences.IsAuthoredResource(edits,objects,cab,8,21),"game Material lease preserves authored local Material");
+    Check(!EiemEffectGameReferences.IsAuthoredResource(edits,objects,cab,99,21),"unregistered resource cannot hijack game Material binding");
+    Check(!EiemEffectGameReferences.IsAuthoredResource(edits,objects,cab,8,28),"authored resource must retain the declared class");
+    string directory=Path.Combine(Path.GetTempPath(),"eff-model-material-lease-"+Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(directory,"source"));
+        var manifest=new JObject { ["format"]="EFFSOURCE",["vfsFingerprint"]="fingerprint",["prefab"]="assets/game/character.prefab",["root"]="root",
+            ["resources"]=new JArray(new JObject { ["identity"]=cab+":7",["logicalPath"]="assets/game/flow.mat",["native"]=new JObject { ["classId"]=21 } }),
+            ["hierarchy"]=new JArray(new JObject { ["identity"]="root",["name"]="Character" }) };
+        File.WriteAllText(Path.Combine(directory,"source/manifest.json"),manifest.ToString());
+        var row=new JObject { ["previewSource"]=directory,["path"]="assets/game/flow.mat" };
+        var lease=EiemEffectGameReferences.SourceLease(row,manifest,cab,7,21);
+        Check((string)lease["sourcePrefab"]=="assets/game/character.prefab" && (string)lease["sourceRoot"]=="Character","ordinary EFFSOURCE Material retains game Prefab shader lease");
+        var newer=JObject.Parse(manifest.ToString());newer["vfsFingerprint"]="new-unrelated-game-generation";
+        Check(EiemEffectGameReferences.SourceLease(row,newer,cab,7,21)!=null,"unchanged native Material identity can outlive a global VFS generation");
+        Reject(()=>EiemEffectGameReferences.SourceLease(row,newer,cab,99,21),"changed native Material identity cannot reuse stale proof");
+        Reject(()=>EiemEffectGameReferences.SourceLease(row,manifest,cab,7,28),"model Material lease type mismatch");
+        row["path"]="assets/game/other.mat";
+        Reject(()=>EiemEffectGameReferences.SourceLease(row,manifest,cab,7,21),"model Material lease outside dependency proof");
+    }
+    finally { Directory.Delete(directory,true); }
+}
 if (args.Length == 2 && args[0] == "--prefab-writer")
 {
     string source = Path.GetFullPath(args[1]);
@@ -96,7 +175,9 @@ if (args.Length == 2 && args[0] == "--prefab-writer")
         {
             int typeId = sourceFile.m_Types.FindIndex(t => t.classID == classId && t.m_Type?.m_Nodes?.Count > 0);
             if (typeId < 0) continue;
-            var document = TypeTreeDocument.CreateDefault(sourceFile.m_Types[typeId].m_Type, sourceFile.m_RefTypes);
+            var document = classId == 142
+                ? EiemEffectPrefabWriter.CreateBundle(sourceFile.m_Types[typeId].m_Type)
+                : TypeTreeDocument.CreateDefault(sourceFile.m_Types[typeId].m_Type, sourceFile.m_RefTypes);
             objects.Add(new(pathId++, typeId, document.Encode()));
         }
         if (objects.Count == 0) continue;
@@ -135,6 +216,10 @@ if (args.Length == 5 && args[0] == "--author-loop")
     Check((int)baseline["serializedFiles"].Count() == 1 && baseline["closure"].Count() == 0 &&
         baseline["serializedFiles"][0]["objects"].Count() == 5 && baseline["serializedFiles"][0]["externals"].Count() == 0,
         "blank author baseline has no donor game objects or external resource snapshots");
+    var authoredBundle = catalog["objects"].Single(row => (int)row["classId"] == 142);
+    var authoredBundleData = JObject.Parse(File.ReadAllText(Path.Combine(source, (string)authoredBundle["data"])));
+    Check((uint?)authoredBundleData["m_RuntimeCompatibility"] == 1,
+        "blank effect bundle passes the engine runtime compatibility gate");
     var initialEdit = new JObject
     {
         ["format"] = "EFF_EFFECT_EDIT", ["version"] = 1,
@@ -648,6 +733,60 @@ if (args.Length == 3 && args[0] is "--build-sources" or "--build-source")
     }
     Check(builds >= (args[0] == "--build-source" ? 1 : 8),"representative native builds exercised");
 }
+if (args.Length == 4 && args[0] == "--borrowed-material")
+{
+    string source = Path.GetFullPath(args[1]), input = Path.GetFullPath(args[2]), output = Path.GetFullPath(args[3]);
+    var edits = JObject.Parse(File.ReadAllText(input));
+    var refs = ((JArray)edits["gameReferences"]).Where(r => (edits["assets"] as JArray)
+        .Any(a => (string)a["identity"] == (string)r["owner"])).ToArray();
+    Check(refs.Length >= 2, "fixture has authored Material Shader/Texture references");
+    EiemEffectBuildCommand.Build(source, input, output);
+    var receipt = JObject.Parse(File.ReadAllText(Path.Combine(output, "build.json")));
+    var manager = new AssetsManager { Game = GameManager.GetGameByType(GameType.ArknightsEndfield) };
+    foreach (var group in refs.GroupBy(r => (string)r["owner"]))
+    {
+        string cab = group.Key[..group.Key.LastIndexOf(':')]; long id = long.Parse(group.Key[(group.Key.LastIndexOf(':') + 1)..]);
+        var product = receipt["nativeFiles"].Single(p => string.Equals((string)p["cab"], cab, StringComparison.OrdinalIgnoreCase));
+        byte[] bytes = File.ReadAllBytes(Path.Combine(output, (string)product["file"]));
+        using var reader = new FileReader(cab, new MemoryStream(bytes, false));
+        var materialFile = new SerializedFile(reader, manager); var obj = materialFile.m_Objects.Single(o => o.m_PathID == id);
+        Check(obj.classID == 21, "authored game reference owner is a local Material");
+        var materialDocument = new TypeTreeDocument(obj.serializedType.m_Type, bytes.AsSpan((int)obj.byteStart, (int)obj.byteSize).ToArray(), materialFile.m_RefTypes);
+        var data = materialDocument.Root.ToJson();
+        Check((float)data["m_SavedProperties"]["m_Floats"].Single(f => (string)f["first"] == "_TintColorIntensity")["second"] == 50,
+            "actual native Material retains edited brightness 50");
+        foreach (var reference in group)
+        {
+            var ptr = data.SelectToken((string)reference["field"]);
+            int fid = (int)ptr["m_FileID"]; long pid = (long)ptr["m_PathID"];
+            Check(fid > 0 && fid <= materialFile.m_Externals.Count && pid != 0, "native authored dependency resolves through external table");
+            Check(!materialFile.m_Objects.Any(o => o.m_PathID == pid), "game dependency payload was not copied locally");
+            Check(receipt["gameResources"].Any(r => (string)r["path"] == (string)reference["path"] &&
+                !string.IsNullOrWhiteSpace((string)r["sourcePrefab"])), "game manages unchanged Shader/Texture through source Prefab lease");
+        }
+    }
+    var effectiveSource = JObject.Parse(File.ReadAllText(Path.Combine(source, "effect.json")));
+    foreach (var node in ((JArray)effectiveSource["hierarchy"]).Where(n =>
+        (edits["emitters"]?["removed"] ?? new JArray()).Any(d => (string)d == (string)n["identity"])).ToArray()) node.Remove();
+    var originalObjects = effectiveSource["objects"].ToDictionary(o => (string)o["identity"]);
+    foreach (var node in edits["emitters"]?["added"] ?? new JArray())
+    {
+        var obj = (JObject)originalObjects[(string)node["template"]].DeepClone();
+        obj["identity"] = node["identity"].DeepClone();
+        if ((int)obj["classId"] == 198)
+        {
+            string ownerCab = ((string)node["identity"])[..((string)node["identity"]).LastIndexOf(':')];
+            obj["owner"] = ownerCab + ":" + (long)node["data"]["m_GameObject"]["m_PathID"];
+        }
+        ((JArray)effectiveSource["objects"]).Add(obj);
+        if ((int)obj["classId"] == 1) ((JArray)effectiveSource["hierarchy"]).Add(new JObject { ["identity"] = node["identity"].DeepClone() });
+    }
+    ValidateRuntime(output, effectiveSource);
+    byte[] first = File.ReadAllBytes(Path.Combine(output, "runtime.bin"));
+    EiemEffectBuildCommand.Build(source, input, output);
+    Check(first.AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(output, "runtime.bin"))), "borrowed Material build is deterministic");
+    Console.WriteLine("PASS borrowed Material: brightness 50, authored payload, game Shader/Texture PPtrs and leases, runtime package, deterministic rebuild");
+}
 if (args.Length == 4 && args[0] == "--authored-assets")
 {
     string source=Path.GetFullPath(args[1]), input=Path.GetFullPath(args[2]), output=Path.GetFullPath(args[3]);
@@ -888,6 +1027,19 @@ void ValidateRuntime(string directory, JObject source)
                 var doc=new TypeTreeDocument(row.serializedType.m_Type,data.ToArray().AsSpan((int)row.byteStart,(int)row.byteSize).ToArray(),file.m_RefTypes);
                 Check((string)doc.Root["m_Name"].Scalar==rootName && !Convert.ToBoolean(doc.Root["m_IsActive"].Scalar),"offline runtime root inactive before Instantiate");found=true;
             }
+        }
+    }
+    if (manifest.BaseStream.Position < manifest.BaseStream.Length)
+    {
+        string version = S();
+        Check(version is "EFF_GAME_RESOURCES/1" or "EFF_GAME_RESOURCES/2", "runtime game resource protocol");
+        ulong gameCount = manifest.ReadUInt64(); Check(gameCount <= 4096, "runtime game dependency bound");
+        for (ulong i = 0; i < gameCount; i++)
+        {
+            string logical = S();
+            Check(logical.StartsWith("assets/") || logical.StartsWith("packages/"), "runtime game logical path");
+            Check(S().Length > 0 && S().Length > 0, "runtime game resource type and name");
+            if (version == "EFF_GAME_RESOURCES/2") Check((S().Length == 0) == (S().Length == 0), "runtime game source lease pair");
         }
     }
     Check(found && manifest.BaseStream.Position==manifest.BaseStream.Length,"runtime root found and packet fully consumed");

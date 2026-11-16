@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace AnimeStudio.GUI;
 
-internal sealed record SharedResourceSettings(string Format, string ResourceRoot, string IndexWorkspace = "");
+internal sealed record SharedResourceSettings(string Format, string ResourceRoot, string IndexWorkspace = "", string AnimeStudio = "");
 
 internal static class EndfieldSharedResources
 {
@@ -55,7 +55,11 @@ internal static class EndfieldSharedResources
         var temp = SettingsPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temp, JsonSerializer.Serialize(new SharedResourceSettings(Format, path, IndexWorkspace),
+            SharedResourceSettings prior = null;
+            try { if (File.Exists(SettingsPath)) prior = JsonSerializer.Deserialize<SharedResourceSettings>(File.ReadAllText(SettingsPath),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { }
+            File.WriteAllText(temp, JsonSerializer.Serialize(new SharedResourceSettings(Format, path, IndexWorkspace, prior?.AnimeStudio ?? ""),
                 new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true }));
             File.Move(temp, SettingsPath, true);
         }

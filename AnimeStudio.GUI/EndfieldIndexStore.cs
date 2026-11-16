@@ -65,7 +65,8 @@ namespace AnimeStudio.GUI
         }
 
         public static LoadedEndfieldIndex Load(string path, ISet<string> containers = null,
-            Func<VirtualAssetRecord, bool> recordFilter = null)
+            Func<VirtualAssetRecord, bool> recordFilter = null,
+            IReadOnlyCollection<EndfieldBundleIndexSpan> verifiedSpans = null)
         {
             var assets = new VirtualAssetPathIndex("Assets");
             var dependencies = new EndfieldBundleDependencyIndex();
@@ -77,6 +78,11 @@ namespace AnimeStudio.GUI
                 4 * 1024 * 1024, FileOptions.SequentialScan);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
             var fingerprint = ReadHeader(reader);
+            // A resolver generation receipt has already authenticated these
+            // complete Bundle spans. Reuse the same record parser without a
+            // second scan of unrelated resources during native compilation.
+            var ranges = verifiedSpans?.OrderBy(r => r.Offset).ToArray();
+            int rangeIndex = 0;
             long storedAssetCount = -1;
             long storedCabCount = -1;
             var ended = false;
@@ -84,9 +90,23 @@ namespace AnimeStudio.GUI
 
             while (stream.Position < stream.Length)
             {
+                if (ranges != null)
+                {
+                    while (rangeIndex < ranges.Length && (ranges[rangeIndex].Size == 0 ||
+                        stream.Position == ranges[rangeIndex].Offset + ranges[rangeIndex].Size)) rangeIndex++;
+                    if (rangeIndex == ranges.Length)
+                    {
+                        storedAssetCount = ranges.Sum(r => r.Assets);storedCabCount = ranges.Sum(r => r.Cabs);
+                        ended = true;goto Finished;
+                    }
+                    var range = ranges[rangeIndex];
+                    if (stream.Position > range.Offset + range.Size) throw new InvalidDataException("Index record escapes its verified Bundle span");
+                    if (stream.Position < range.Offset) stream.Position = range.Offset;
+                }
                 switch (reader.ReadByte())
                 {
                     case EndRecord:
+                        if (ranges != null) throw new InvalidDataException("Unexpected end record inside a Bundle span");
                         storedAssetCount = reader.ReadInt64();
                         storedCabCount = reader.ReadInt64();
                         ended = true;
@@ -128,7 +148,7 @@ namespace AnimeStudio.GUI
 
         Finished:
             assets.FinishLoading(sortRecords: false);
-            if (!ended || stream.Position != stream.Length ||
+            if (!ended || ranges == null && stream.Position != stream.Length ||
                 storedAssetCount != readAssetCount || storedCabCount != dependencies.CabCount)
                 throw new InvalidDataException("The EFF Endfield index is incomplete or corrupt.");
             return new LoadedEndfieldIndex(

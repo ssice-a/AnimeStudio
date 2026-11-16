@@ -20,7 +20,7 @@ internal sealed class EiemEffectEmitterEdits
     internal readonly Dictionary<string, int> Types = new(StringComparer.OrdinalIgnoreCase);
 
     internal EiemEffectEmitterEdits(JToken input, JObject effect, IReadOnlyDictionary<string, JToken> objects,
-        IReadOnlyDictionary<string, (SerializedFile File, byte[] Bytes, JToken Row)> files)
+        IReadOnlyDictionary<string, (SerializedFile File, byte[] Bytes, JToken Row)> files, IReadOnlySet<string> selected = null)
     {
         this.effect = effect; this.objects = objects; this.files = files;
         nodes = effect["hierarchy"].ToDictionary(n => (string)n["identity"], StringComparer.OrdinalIgnoreCase);
@@ -57,12 +57,14 @@ internal sealed class EiemEffectEmitterEdits
             if (!nodes.TryGetValue(go.Template, out var sourceNode)) throw new InvalidDataException("Emitter template must be a prefab node");
             var components = declarations.Where(d => Types[d.Identity] != 1 && Pointer(d.Identity, d.Data["m_GameObject"]) == go.Identity).ToArray();
             var required = sourceNode["components"].Select(c => (string)c).ToArray();
-            if (components.Length != required.Length || components.Select(c => c.Template).Distinct().Count() != required.Length ||
-                required.Any(c => !components.Any(d => d.Template == c)) ||
-                components.Count(d => Types[d.Identity] == 4) != 1 || components.Count(d => Types[d.Identity] == 198) != 1 ||
-                components.Count(d => Types[d.Identity] == 199) != 1)
+            bool scaffold = selected != null && !selected.Contains(go.Identity);
+            if (components.Select(c => c.Template).Distinct().Count() != components.Length ||
+                components.Any(c => !required.Contains(c.Template)) ||
+                components.Count(d => Types[d.Identity] == 4) != 1 ||
+                components.Count(d => Types[d.Identity] == 198) != (scaffold ? 0 : 1) ||
+                components.Count(d => Types[d.Identity] == 199) != (scaffold ? 0 : 1))
                 throw new InvalidDataException("New emitter must clone its complete GameObject component set");
-            var expected = new JArray(required.Select(c => new JObject { ["component"] = PPtr(components.Single(d => d.Template == c).Identity) }));
+            var expected = new JArray(components.Select(c => new JObject { ["component"] = PPtr(c.Identity) }));
             if (!JToken.DeepEquals(expected, go.Data["m_Component"])) throw new InvalidDataException("Emitter component ownership mismatch");
         }
         foreach (var declaration in declarations.Where(d => Types[d.Identity] != 1))

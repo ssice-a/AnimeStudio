@@ -102,13 +102,14 @@ internal static class EiemEffectAssetEdits
     }
 
     internal static byte[] Rebuild(SerializedFile file, byte[] original,
-        IReadOnlyDictionary<long, byte[]> replacements, IReadOnlyList<Asset> additions)
+        IReadOnlyDictionary<long, byte[]> replacements, IReadOnlyList<Asset> additions,
+        IReadOnlySet<long> retained = null)
     {
-        if (additions.Count == 0) return EiemEffectBuildCommand.Rebuild(file, original, replacements);
+        if (additions.Count == 0 && retained == null) return EiemEffectBuildCommand.Rebuild(file, original, replacements);
         if ((int)file.header.m_Version != 22 || file.ObjectTableEnd - file.ObjectTableStart != file.m_Objects.Count * 24L ||
             file.ObjectCountOffset < 48 || file.ObjectCountOffset + 4 > file.ObjectTableStart)
             throw new InvalidDataException("Unsupported native object table for added assets");
-        var rows = file.m_Objects.Select(o => (Id:o.m_PathID, Type:o.typeID,
+        var rows = file.m_Objects.Where(o => retained == null || retained.Contains(o.m_PathID)).Select(o => (Id:o.m_PathID, Type:o.typeID,
             Bytes:replacements.GetValueOrDefault(o.m_PathID) ?? original.AsSpan((int)o.byteStart, (int)o.byteSize).ToArray()))
             .Concat(additions.Select(a => (Id:a.Id, Type:a.Type, Bytes:a.Payload))).OrderBy(o => o.Id).ToArray();
         if (rows.Select(r => r.Id).Distinct().Count() != rows.Length) throw new InvalidDataException("Duplicate native asset ID");
