@@ -1,4 +1,10 @@
-# AnimeStudio v1.9.5
+# AnimeStudio v1.9.6
+
+- Build native AnimationClips from EFF author declarations, including transform, shape key, and material property tracks.
+- Build effect Prefabs with selected emitters and resolve explicitly referenced game resources by logical path. Runtime effect packages retain the resources reachable from the exported effect.
+- Windows x64 GUI and CLI packages are available for .NET 9 and .NET 10.
+
+## AnimeStudio v1.9.5
 
 Adds an author-owned particle Prefab workflow for building effects from scratch. It uses game-version TypeTrees as schemas while creating a separate native object graph, and preserves the source effect editing and round-trip path.
 
