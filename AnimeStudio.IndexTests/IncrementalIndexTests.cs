@@ -171,7 +171,10 @@ internal static class IncrementalIndexTests
             var resume = Path.Combine(root, "resume");using var cancellation = new CancellationTokenSource();
             progress.OnReport = p => { if (p.ProcessedBundles == 32) cancellation.Cancel(); };parsed.Clear();
             Reject(() => Build(resume, token: cancellation.Token), "Cancellation");Check(parsed.Count == 32, "Cancellation checkpoint position");
-            progress.OnReport = null;parsed.Clear();var resumed = Build(resume);Check(parsed.Count == 8, "Resume reparsed completed Bundles");
+            progress.OnReport = null;var resumePartial = EndfieldVfsAssetIndexBuilder.GetIndexPath(resume) + ".partial";
+            File.SetAttributes(resumePartial, File.GetAttributes(resumePartial) | FileAttributes.ReadOnly);
+            parsed.Clear();var resumed = Build(resume);Check(parsed.Count == 8, "Read-only checkpoint fallback reparsed completed Bundles");
+            Check(!File.Exists(resumePartial), "Published index left a stale read-only partial behind");
             var cold = Build(Path.Combine(root, "resume-cold"));Check(File.ReadAllBytes(resumed).SequenceEqual(File.ReadAllBytes(cold)), "Resumed output differs from cold");
 
             var corruptResume = Path.Combine(root, "corrupt-resume");using var cancelCorrupt = new CancellationTokenSource();progress.OnReport = p => { if (p.ProcessedBundles == 32) cancelCorrupt.Cancel(); };

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Reflection;
 using AnimeStudio.GUI;
 
 internal static class VfsFormatTests
@@ -7,6 +8,27 @@ internal static class VfsFormatTests
     private delegate void Cipher(Span<byte> data, ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce, uint counter);
     private static readonly Cipher Encrypt = typeof(EndfieldVfsArchive).GetMethod("ChaCha20Xor",
         System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.CreateDelegate<Cipher>();
+
+    private static void RejectImpossibleCount(string methodName)
+    {
+        using var stream = new MemoryStream(new byte[4]);
+        using var reader = new AnimeStudio.EndianBinaryReader(stream);
+        var vfsUtils = typeof(AnimeStudio.Game).Assembly.GetType("AnimeStudio.VFSUtils", throwOnError: true)!;
+        var method = vfsUtils.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static)!;
+        try
+        {
+            method.Invoke(null, new object[] { reader, AnimeStudio.GameType.ArknightsEndfield });
+        }
+        catch (TargetInvocationException error) when (error.InnerException is InvalidDataException)
+        {
+            return;
+        }
+        catch (TargetInvocationException error)
+        {
+            throw new Exception($"{methodName} did not reject an impossible metadata count with InvalidDataException", error.InnerException);
+        }
+        throw new Exception($"{methodName} accepted an impossible metadata count");
+    }
 
     public static void Run()
     {
@@ -52,8 +74,29 @@ internal static class VfsFormatTests
                     if (file == 0 && archive.ReadPayload(entry.LogicalPath)[0] != chunk + 1)
                         throw new Exception($"BLC v{code}: wrong CHK range");
                 }
+                if (code == 5)
+                {
+                    var game = Path.Combine(root, "layered-game");
+                    var baseVfs = Path.Combine(game, "Endfield_Data", "StreamingAssets", "VFS");
+                    var hotVfs = Path.Combine(game, "Endfield_Data", "Persistent", "VFS");
+                    Directory.CreateDirectory(baseVfs);Directory.CreateDirectory(hotVfs);
+                    File.Copy(Path.Combine(dir, "test.blc"), Path.Combine(baseVfs, "test.blc"));
+                    File.Copy(Path.Combine(dir, "test.blc"), Path.Combine(hotVfs, "test.blc"));
+                    foreach (var chunkPath in Directory.EnumerateFiles(dir, "*.chk"))
+                        File.Copy(chunkPath, Path.Combine(baseVfs, Path.GetFileName(chunkPath)));
+                    var layered = EndfieldVfsArchive.Open(game);
+                    if (layered.LayerCount != 2 || layered.Entries.Count != 4 || layered.MissingPayloadCount != 0)
+                        throw new Exception($"Layered VFS counts were unexpected: layers={layered.LayerCount}, entries={layered.Entries.Count}, missing={layered.MissingPayloadCount}");
+                    if (layered.Entries.Values.Any(entry => !entry.SourceChk.StartsWith(baseVfs, StringComparison.OrdinalIgnoreCase)))
+                        throw new Exception("Layered VFS merge did not redirect fallback payloads to the base CHK: " +
+                            string.Join("; ", layered.Entries.Values.Select(entry => entry.LogicalPath + " => " + entry.SourceBlc)));
+                    if (layered.ReadPayload("Bundles/Windows/main/0-0.ab")[0] != 1)
+                        throw new Exception("Layered VFS merge selected the wrong payload");
+                }
             }
-            Console.WriteLine("PASS BLC v3/v4/v5: multi-chunk/file alignment, 64-bit tags, encrypted IV metadata and exact payload ranges");
+            RejectImpossibleCount("ReadBlocksInfos");
+            RejectImpossibleCount("ReadDirectoryInfos");
+            Console.WriteLine("PASS BLC v3/v4/v5, layered CHK fallback, and malformed VFS count bounds");
         }
         finally { Directory.Delete(root, true); }
     }

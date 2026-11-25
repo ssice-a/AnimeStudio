@@ -1,3 +1,11 @@
+# AnimeStudio v1.9.7
+
+- Reduces memory use while opening layered Endfield VFS files, validates metadata counts before allocation, and improves fallback to base-game payloads.
+- Reuses unchanged Bundle index ranges and resumes only verified checkpoints, avoiding repeated full-index work after interrupted builds or moved CHK files.
+- Coordinates AnimeStudio, Mod Manager, and portable-index operations on one workspace lock. Contending or canceled clients release the mutex while waiting and keep compatibility with existing lock-file clients.
+- Verified against the local game installation with 272,479 Bundles, 4,501,260 assets, and no failed Bundles.
+- Windows x64 GUI and CLI packages are available for .NET 9 and .NET 10.
+
 # AnimeStudio v1.9.6
 
 - Build native AnimationClips from EFF author declarations, including transform, shape key, and material property tracks.

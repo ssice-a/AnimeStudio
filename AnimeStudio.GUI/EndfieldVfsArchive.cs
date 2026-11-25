@@ -51,6 +51,10 @@ namespace AnimeStudio.GUI
 
         // Explicit single-layer access is kept for diagnostics that compare layers.
         public static EndfieldVfsArchive OpenLayer(string vfsRoot)
+            => OpenLayer(vfsRoot, buildEntryLookup: true, retainBlocks: false, null);
+
+        private static EndfieldVfsArchive OpenLayer(string vfsRoot, bool buildEntryLookup, bool retainBlocks,
+            byte[] readBuffer = null)
         {
             if (!Directory.Exists(vfsRoot))
                 throw new DirectoryNotFoundException($"Endfield VFS was not found: {vfsRoot}");
@@ -58,13 +62,18 @@ namespace AnimeStudio.GUI
             var archive = new EndfieldVfsArchive(vfsRoot);
             var blcFiles = Directory.EnumerateFiles(vfsRoot, "*.blc", SearchOption.AllDirectories)
                 .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
+            readBuffer ??= CreateBlcReadBuffer(blcFiles);
+            // Reuse one scratch buffer so decrypting every BLC does not allocate
+            // a second large-object-heap array for each metadata file.
             foreach (var blc in blcFiles)
-                archive.ReadBlc(blc);
+                archive.ReadBlc(blc, buildEntryLookup, readBuffer);
 
             archive.Fingerprint = BuildFingerprint(vfsRoot, blcFiles);
 
-            if (archive.entries.Count == 0)
+            if (archive.blocks.Count == 0 || !archive.blocks.Values.Any(block => block.Entries.Count > 0))
                 throw new InvalidDataException($"No logical files were found in Endfield VFS: {vfsRoot}");
+            if (!retainBlocks)
+                archive.blocks.Clear();
             return archive;
         }
 
@@ -96,10 +105,13 @@ namespace AnimeStudio.GUI
             var resolved = ResolveSelection(selectedPath);
             var baseRoot = Path.Combine(resolved, "Endfield_Data", "StreamingAssets", "VFS");
             if (!Directory.Exists(baseRoot)) return OpenLayer(resolved);
-            var shipped = OpenLayer(baseRoot);
             var hotRoot = Path.Combine(resolved, "Endfield_Data", "Persistent", "VFS");
-            var hot = Directory.Exists(hotRoot) && Directory.EnumerateFiles(hotRoot, "*.blc", SearchOption.AllDirectories).Any() ? OpenLayer(hotRoot) : null;
-            var archive = new EndfieldVfsArchive(resolved) { GameDirectory = resolved, LayerCount = hot == null ? 1 : 2 };
+            var hotExists = Directory.Exists(hotRoot) && Directory.EnumerateFiles(hotRoot, "*.blc", SearchOption.AllDirectories).Any();
+            var readBuffer = CreateBlcReadBufferForRoots(hotExists ? new[] { baseRoot, hotRoot } : new[] { baseRoot });
+            var shipped = OpenLayer(baseRoot, buildEntryLookup: false, retainBlocks: true, readBuffer: readBuffer);
+            var hot = hotExists
+                ? OpenLayer(hotRoot, buildEntryLookup: false, retainBlocks: true, readBuffer: readBuffer)
+                : null;
             var active = new Dictionary<string, Block>(shipped.blocks, StringComparer.OrdinalIgnoreCase);
             int baseVersion = shipped.blocks.Values.Max(b => b.Version);
             if (hot != null) foreach (var pair in hot.blocks)
@@ -117,21 +129,59 @@ namespace AnimeStudio.GUI
             foreach (var root in new[] { baseRoot, hotRoot }) if (Directory.Exists(root))
                 foreach (var path in Directory.EnumerateFiles(root, "*.chk", SearchOption.AllDirectories)) sizes[path] = new FileInfo(path).Length;
             bool Available(EndfieldVfsEntry entry) => sizes.TryGetValue(entry.SourceChk, out var size) && entry.Offset >= 0 && entry.Length > 0 && entry.Offset <= size && entry.Length <= size - entry.Offset;
+
+            // Only active block maps are built during layer loading. Reserve the
+            // final logical-path table once instead of retaining one per layer.
+            shipped.entries.EnsureCapacity(active.Values.Sum(block => block.Entries.Count));
+            var fallbackEntries = new Dictionary<string, EndfieldVfsEntry>(StringComparer.OrdinalIgnoreCase);
+            var fallbackSources = new Dictionary<string, EndfieldVfsEntry>(StringComparer.OrdinalIgnoreCase);
             foreach (var block in active.Values) foreach (var entry in block.Entries.Values)
             {
-                var chosen = entry;
-                if (!Available(chosen) && hot != null && chosen.SourceBlc.StartsWith(hotRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                if (!Available(entry) && hot != null && entry.SourceBlc.StartsWith(hotRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                 {
-                    var atBase = chosen with { SourceChk = Path.Combine(baseRoot, Path.GetRelativePath(hotRoot, chosen.SourceChk)) };
-                    if (Available(atBase) && shipped.chunkDigests.TryGetValue(atBase.SourceChk, out var digest) && digest == chosen.ChunkContentMd5) chosen = atBase;
-                    else if (shipped.TryGet(chosen.LogicalPath, out var original) && SameContent(chosen, original) && Available(original)) chosen = original;
+                    var atBase = entry with { SourceChk = Path.Combine(baseRoot, Path.GetRelativePath(hotRoot, entry.SourceChk)) };
+                    if (Available(atBase) && shipped.chunkDigests.TryGetValue(atBase.SourceChk, out var digest) && digest == entry.ChunkContentMd5)
+                        fallbackEntries[entry.LogicalPath] = atBase;
+                    else
+                        fallbackSources[entry.LogicalPath] = entry;
                 }
-                if (!Available(chosen)) archive.MissingPayloadCount++;
-                if (!archive.entries.TryAdd(chosen.LogicalPath, chosen))
+            }
+
+            if (fallbackSources.Count != 0)
+            {
+                var baseFallbacks = new Dictionary<string, EndfieldVfsEntry>(StringComparer.OrdinalIgnoreCase);
+                foreach (var block in shipped.blocks.Values) foreach (var entry in block.Entries.Values)
+                    if (fallbackSources.ContainsKey(entry.LogicalPath))
+                        baseFallbacks[entry.LogicalPath] = entry;
+                foreach (var pair in fallbackSources)
+                    if (baseFallbacks.TryGetValue(pair.Key, out var original) && SameContent(pair.Value, original) && Available(original))
+                        fallbackEntries[pair.Key] = original;
+            }
+
+            shipped.Fingerprint = LayerIdentity(shipped, hot);
+            foreach (var block in active.Values) foreach (var entry in block.Entries.Values)
+            {
+                var chosen = fallbackEntries.TryGetValue(entry.LogicalPath, out var fallback) ? fallback : entry;
+                if (!Available(chosen))
+                    shipped.MissingPayloadCount++;
+                if (!shipped.entries.TryAdd(chosen.LogicalPath, chosen))
                     throw new InvalidDataException("Conflicting active VFS owners: " + chosen.LogicalPath);
             }
-            archive.Fingerprint = LayerIdentity(shipped, hot);
-            return archive;
+
+            shipped.GameDirectory = resolved;
+            shipped.LayerCount = hot == null ? 1 : 2;
+            shipped.blocks.Clear();
+            shipped.chunkDigests.Clear();
+            shipped.blcDigests.Clear();
+            active.Clear();
+            if (hot != null)
+            {
+                hot.blocks.Clear();
+                hot.chunkDigests.Clear();
+                hot.blcDigests.Clear();
+            }
+            fallbackEntries.Clear();
+            return shipped;
         }
 
         private static string LayerIdentity(EndfieldVfsArchive shipped, EndfieldVfsArchive hot)
@@ -257,15 +307,39 @@ namespace AnimeStudio.GUI
             return Convert.ToHexString(hash.GetHashAndReset());
         }
 
-        private void ReadBlc(string blcPath)
+        private static byte[] CreateBlcReadBuffer(IEnumerable<string> blcFiles)
         {
-            var raw = File.ReadAllBytes(blcPath);
-            if (raw.Length < BlockHeaderLength + 4)
-                throw new InvalidDataException($"BLC is too short: {blcPath}");
+            long maximumLength = 0;
+            foreach (var path in blcFiles)
+                maximumLength = Math.Max(maximumLength, new FileInfo(path).Length);
+            if (maximumLength > int.MaxValue)
+                throw new InvalidDataException("BLC metadata exceeds the supported in-memory size.");
+            return new byte[checked((int)maximumLength)];
+        }
 
-            var data = raw.AsSpan(BlockHeaderLength).ToArray();
-            ChaCha20Xor(data, Key, raw.AsSpan(0, BlockHeaderLength), initialCounter: 1);
-            using var stream = new MemoryStream(data, 0, data.Length - 4, writable: false);
+        private static byte[] CreateBlcReadBufferForRoots(IEnumerable<string> roots)
+        {
+            var files = roots.Where(Directory.Exists)
+                .SelectMany(root => Directory.EnumerateFiles(root, "*.blc", SearchOption.AllDirectories));
+            return CreateBlcReadBuffer(files);
+        }
+
+        private void ReadBlc(string blcPath, bool buildEntryLookup, byte[] buffer)
+        {
+            var blcLength = new FileInfo(blcPath).Length;
+            if (blcLength < BlockHeaderLength + 4)
+                throw new InvalidDataException($"BLC is too short: {blcPath}");
+            if (blcLength > buffer.Length || blcLength > int.MaxValue)
+                throw new InvalidDataException($"BLC exceeds the available metadata buffer: {blcPath}");
+
+            var byteCount = checked((int)blcLength);
+            using (var file = new FileStream(blcPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                file.ReadExactly(buffer.AsSpan(0, byteCount));
+            var digest = SHA256.HashData(buffer.AsSpan(0, byteCount));
+            ChaCha20Xor(buffer.AsSpan(BlockHeaderLength, byteCount - BlockHeaderLength), Key,
+                buffer.AsSpan(0, BlockHeaderLength), initialCounter: 1);
+            using var stream = new MemoryStream(buffer, BlockHeaderLength,
+                byteCount - BlockHeaderLength - 4, writable: false);
             using var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: false);
 
             var rawVersion = reader.ReadInt32();
@@ -314,11 +388,12 @@ namespace AnimeStudio.GUI
                         logicalPath, blcPath, chunkPath, offset, length, encrypted,
                         ivSeed, fileType, fileNameHash, fileDataMd5, chunkContentMd5);
                     if (!blockEntries.TryAdd(logicalPath, entry)) throw new InvalidDataException("Duplicate BLC logical path: " + logicalPath + " raw=" + rawLogicalPath);
-                    entries[logicalPath] = entry;
+                    if (buildEntryLookup)
+                        entries[logicalPath] = entry;
                 }
             }
             if (!blocks.TryAdd(blockKey, new Block(blockVersion, blcPath, blockEntries))) throw new InvalidDataException("Duplicate VFS block identity: " + blcPath);
-            blcDigests.Add(Path.GetRelativePath(VfsRoot, blcPath).Replace('\\', '/'), Convert.ToHexString(SHA256.HashData(raw)));
+            blcDigests.Add(Path.GetRelativePath(VfsRoot, blcPath).Replace('\\', '/'), Convert.ToHexString(digest));
         }
 
         public static string NormalizeLogicalPath(string value)

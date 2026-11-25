@@ -46,8 +46,7 @@ namespace AnimeStudio.GUI
         {
             if (TryGetCurrentIndex(archive, workspace, out _)) return true;
             var index = GetIndexPath(workspace);if (!File.Exists(index)) return false;
-            using var gate = new FileStream(Path.Combine(Path.GetDirectoryName(index)!, "endfield-index.lock"),
-                FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            using var gate = AcquireWorkspaceLock(Path.Combine(Path.GetDirectoryName(index)!, "endfield-index.lock"), token);
             return TryRebindUnchangedContentLocked(archive, workspace, token);
         }
 
@@ -112,4 +111,5 @@ namespace AnimeStudio.GUI
 
         private static string GetManifestPath(string workspace) => Path.Combine(Path.GetFullPath(workspace), "index", "endfield-index-manifest.json");
     }
+
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Text;
@@ -162,6 +163,13 @@ namespace AnimeStudio
                     break;
             }
 
+            const int blockRecordSize = 10;
+            if (blocksCount > reader.Remaining / blockRecordSize)
+            {
+                throw new InvalidDataException(
+                    $"Invalid VFS block count {blocksCount}. At most {reader.Remaining / blockRecordSize} records fit in the remaining metadata.");
+            }
+
             Logger.Verbose($"Blocks Count: {blocksCount}");
 
             List<BundleFile.StorageBlock> blocks = new();
@@ -260,6 +268,13 @@ namespace AnimeStudio
                 case GameType.ArknightsEndfieldCB3:
                     nodesCount = BitOperations.RotateLeft(nodesCount, 3) ^ 0xAF807AFC;
                     break;
+            }
+
+            const int minimumNodeRecordSize = 21;
+            if (nodesCount > reader.Remaining / minimumNodeRecordSize)
+            {
+                throw new InvalidDataException(
+                    $"Invalid VFS node count {nodesCount}. At most {reader.Remaining / minimumNodeRecordSize} records fit in the remaining metadata.");
             }
 
             Logger.Verbose($"Nodes Count: {nodesCount}");

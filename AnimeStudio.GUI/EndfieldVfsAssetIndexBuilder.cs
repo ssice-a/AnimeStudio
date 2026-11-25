@@ -25,6 +25,68 @@ namespace AnimeStudio.GUI
             long OutputLength, long AssetCount, long CabCount, int FailedBundles,
             string ParserIdentity, int ParsedBundles, int ReusedBundles, int RemovedBundles, string PrefixDigest);
 
+        internal static EndfieldWorkspaceLock AcquireWorkspaceLock(string path, CancellationToken token)
+        {
+            var indexRoot = Path.GetFullPath(Path.GetDirectoryName(path)!)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .ToUpperInvariant();
+            var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(indexRoot)));
+            var mutex = new Mutex(initiallyOwned: false, name: $"Local\\EFF.EndfieldIndex.{identity}");
+            var mutexOwned = false;
+            try
+            {
+                while (true)
+                {
+                    token.ThrowIfCancellationRequested();
+                    try
+                    {
+                        if (!mutex.WaitOne(TimeSpan.FromMilliseconds(250))) continue;
+                        mutexOwned = true;
+                    }
+                    catch (AbandonedMutexException)
+                    {
+                        // An abandoned mutex is acquired by the waiting thread.
+                        mutexOwned = true;
+                    }
+
+                    FileStream legacyFileLock = null;
+                    if (File.Exists(path))
+                    {
+                        try { legacyFileLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None); }
+                        catch (IOException error) when (IsSharingViolation(error))
+                        {
+                            if (mutexOwned)
+                            {
+                                mutex.ReleaseMutex();
+                                mutexOwned = false;
+                            }
+                            token.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(250));
+                            continue;
+                        }
+                        catch (UnauthorizedAccessException)
+                        {
+                            // Some Windows policies deny access to the legacy marker file.
+                            // The named mutex still coordinates every current client.
+                        }
+                    }
+                    mutexOwned = false;
+                    return new EndfieldWorkspaceLock(mutex, legacyFileLock);
+                }
+            }
+            catch
+            {
+                if (mutexOwned) mutex.ReleaseMutex();
+                mutex.Dispose();
+                throw;
+            }
+        }
+
+        private static bool IsSharingViolation(IOException error)
+        {
+            var win32Error = error.HResult & 0xFFFF;
+            return win32Error is 32 or 33;
+        }
+
         public static Task<string> BuildAsync(EndfieldVfsArchive archive, string workspace, Game game,
             IProgress<EndfieldIndexProgress> progress, CancellationToken cancellationToken, int? bundleLimit = null) =>
             Task.Run(() => Build(archive, workspace, game, progress, cancellationToken, bundleLimit), cancellationToken);
@@ -44,7 +106,7 @@ namespace AnimeStudio.GUI
                 TypeFlags.SetTypes(null);
                 AssetsHelper.Minimal = true;
                 var indexRoot = Path.Combine(Path.GetFullPath(workspace), "index");Directory.CreateDirectory(indexRoot);
-                using var workspaceLock = new FileStream(Path.Combine(indexRoot, "endfield-index.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                using var workspaceLock = AcquireWorkspaceLock(Path.Combine(indexRoot, "endfield-index.lock"), token);
                 return BuildLocked(archive, workspace, game, progress, token, bundleLimit, parse);
             }
             finally { TypeFlags.SetTypes(previousTypes);AssetsHelper.Minimal = previousMinimal;BuildGate.Release(); }
@@ -57,6 +119,8 @@ namespace AnimeStudio.GUI
             var indexPath = GetIndexPath(workspace);var partialPath = indexPath + ".partial";
             var cachePath = EndfieldBundleIndexCache.PathFor(indexPath);var cachePartial = cachePath + ".partial";
             var checkpointPath = GetCheckpointPath(workspace);
+            var alternatePartialPath = partialPath + ".animestudio";
+            var alternateCheckpointPath = checkpointPath + ".animestudio";
             var errorPath = Path.Combine(Path.GetDirectoryName(indexPath), "endfield-index-errors.log");
             var bundles = archive.Entries.Values.Where(x => x.LogicalPath.EndsWith(".ab", StringComparison.OrdinalIgnoreCase))
                 .OrderBy(x => x.LogicalPath, StringComparer.OrdinalIgnoreCase).ToArray();
@@ -107,13 +171,24 @@ namespace AnimeStudio.GUI
                 }
             }
 
-            var checkpoint = ReadCheckpoint(checkpointPath, partialPath, archive.Fingerprint, bundles.Length);
+            var outputPartialPath = partialPath;
+            var outputCheckpointPath = checkpointPath;
+            var checkpoint = ReadCheckpoint(alternateCheckpointPath, alternatePartialPath, archive.Fingerprint, bundles.Length);
+            if (checkpoint != null)
+            {
+                outputPartialPath = alternatePartialPath;
+                outputCheckpointPath = alternateCheckpointPath;
+            }
+            else
+            {
+                checkpoint = ReadCheckpoint(checkpointPath, partialPath, archive.Fingerprint, bundles.Length);
+            }
             EndfieldBundleIndexCache prefix = null;
             if (checkpoint != null)
             {
                 try
                 {
-                    prefix = EndfieldBundleIndexCache.Scan(partialPath, archive.Fingerprint, bundles.Take(checkpoint.NextBundle).ToArray(),
+                    prefix = EndfieldBundleIndexCache.Scan(outputPartialPath, archive.Fingerprint, bundles.Take(checkpoint.NextBundle).ToArray(),
                         checkpoint.OutputLength, checkpoint.AssetCount, checkpoint.CabCount, false, token);
                     using var check = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                     foreach (var row in prefix.Spans.Values) check.AppendData(row.Sha256);
@@ -129,14 +204,35 @@ namespace AnimeStudio.GUI
             foreach (var row in rows.Values) checkpointHash.AppendData(row.Sha256);
             var buffer = new byte[64 * 1024];
             using var previous = old == null ? null : File.OpenRead(indexPath);
-            using var output = new FileStream(partialPath, checkpoint == null ? FileMode.Create : FileMode.Open,
-                FileAccess.ReadWrite, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
+            FileStream outputStream;
+            try
+            {
+                outputStream = new FileStream(outputPartialPath, checkpoint == null ? FileMode.Create : FileMode.Open,
+                    FileAccess.ReadWrite, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
+            }
+            catch (UnauthorizedAccessException) when (outputPartialPath == partialPath)
+            {
+                outputPartialPath = alternatePartialPath;
+                outputCheckpointPath = alternateCheckpointPath;
+                if (checkpoint != null)
+                {
+                    File.Copy(partialPath, alternatePartialPath, overwrite: true);
+                    File.Copy(checkpointPath, alternateCheckpointPath, overwrite: true);
+                    File.SetAttributes(alternatePartialPath,
+                        File.GetAttributes(alternatePartialPath) & ~FileAttributes.ReadOnly);
+                    File.SetAttributes(alternateCheckpointPath,
+                        File.GetAttributes(alternateCheckpointPath) & ~FileAttributes.ReadOnly);
+                }
+                outputStream = new FileStream(outputPartialPath, checkpoint == null ? FileMode.Create : FileMode.Open,
+                    FileAccess.ReadWrite, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
+            }
+            using var output = outputStream;
             var writer = new BinaryWriter(output, new UTF8Encoding(false), true);
             int checkpointParsed = parsed, reportedParsed = parsed;TimeSpan checkpointTime = stopwatch.Elapsed, reportTime = stopwatch.Elapsed;
             void SaveCheckpoint(int next)
             {
                 writer.Flush();output.Flush(false);
-                WriteJsonAtomic(checkpointPath, new Checkpoint(FormatVersion, archive.Fingerprint, next,
+                WriteJsonAtomic(outputCheckpointPath, new Checkpoint(FormatVersion, archive.Fingerprint, next,
                     output.Position, assetCount, cabCount, 0, EndfieldBundleIndexCache.ParserIdentity, parsed, reused, removed, Convert.ToHexString(checkpointHash.GetCurrentHash())));
                 checkpointParsed = parsed;checkpointTime = stopwatch.Elapsed;
             }
@@ -192,8 +288,13 @@ namespace AnimeStudio.GUI
             writer.Dispose();output.Dispose();previous?.Dispose();result.Save(cachePartial);token.ThrowIfCancellationRequested();archive.VerifyCurrent();
             // Sidecar and manifest validate index identity/extent. An interrupted
             // pair replacement cannot reuse old metadata against a new index.
-            File.Move(partialPath, indexPath, true);File.Move(cachePartial, cachePath, true);WriteManifest(workspace, archive, result, parsed, reused, removed);
-            File.Delete(checkpointPath);
+            File.Move(outputPartialPath, indexPath, true);File.Move(cachePartial, cachePath, true);WriteManifest(workspace, archive, result, parsed, reused, removed);
+            File.Delete(outputCheckpointPath);
+            if (outputPartialPath != partialPath)
+            {
+                TryDelete(partialPath);
+                TryDelete(checkpointPath);
+            }
             progress?.Report(new(bundles.Length, bundles.Length, assetCount, cabCount, 0, "Incremental index published", stopwatch.Elapsed, parsed, reused, removed));return indexPath;
         }
 
@@ -231,7 +332,42 @@ namespace AnimeStudio.GUI
                 catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < 7) { Thread.Sleep(25 * (attempt + 1)); }
             }
         }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                var attributes = File.GetAttributes(path);
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+                File.Delete(path);
+            }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException) { }
+        }
+
         private static string GetCheckpointPath(string workspace) => Path.Combine(Path.GetFullPath(workspace), "index", "endfield-index-progress.json");
 
+    }
+
+    internal sealed class EndfieldWorkspaceLock : IDisposable
+    {
+        private Mutex mutex;
+        private FileStream legacyFileLock;
+
+        internal EndfieldWorkspaceLock(Mutex mutex, FileStream legacyFileLock)
+        {
+            this.mutex = mutex;
+            this.legacyFileLock = legacyFileLock;
+        }
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref legacyFileLock, null)?.Dispose();
+            var heldMutex = Interlocked.Exchange(ref mutex, null);
+            if (heldMutex == null) return;
+            heldMutex.ReleaseMutex();
+            heldMutex.Dispose();
+        }
     }
 }

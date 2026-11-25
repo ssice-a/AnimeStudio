@@ -108,7 +108,7 @@ internal static class EndfieldPortableIndex
                 EndfieldBundleIndexCache.ParserIdentity, 0, bundles.Length, 0)));
             token.ThrowIfCancellationRequested();archive.VerifyCurrent();
             var indexRoot = Path.Combine(workspace, "index");Directory.CreateDirectory(indexRoot);
-            using var gate = new FileStream(Path.Combine(indexRoot, "endfield-index.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            using var gate = EndfieldVfsAssetIndexBuilder.AcquireWorkspaceLock(Path.Combine(indexRoot, "endfield-index.lock"), token);
             var names = new[] { "endfield_assets.eidx", "endfield_assets.eidx.bundles", "endfield-index-manifest.json" };
             var backupRoot = Path.Combine(tempRoot, "previous");Directory.CreateDirectory(backupRoot);
             var committed = new System.Collections.Generic.List<string>();
