@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup Condition="'$(MSBuildProjectName)' == 'AnimeStudio' Or '$(MSBuildProjectName)' == 'AnimeStudio.CLI' Or '$(MSBuildProjectName)' == 'AnimeStudio.GUI'">
-    <Version>1.9.7</Version>
-    <AssemblyVersion>1.9.7</AssemblyVersion>
-    <FileVersion>1.9.7</FileVersion>
+    <Version>1.9.8</Version>
+    <AssemblyVersion>1.9.8</AssemblyVersion>
+    <FileVersion>1.9.8</FileVersion>
   </PropertyGroup>
 </Project>

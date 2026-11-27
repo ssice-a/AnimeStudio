@@ -195,6 +195,7 @@ namespace AnimeStudio.GUI
         private ToolStripMenuItem openEndfieldVfsToolStripMenuItem;
         private VirtualAssetPathIndex endfieldVirtualPathIndex;
         private EndfieldBundleDependencyIndex endfieldDependencyIndex;
+        private EndfieldAssetSourceIndex endfieldAssetSourceIndex;
         private EndfieldVfsArchive endfieldVfsArchive;
         private List<VirtualAssetRecord> endfieldVirtualAssetRecords = new();
         private List<VirtualAssetRecord> endfieldVisibleAssetRecords = new();
@@ -241,27 +242,44 @@ namespace AnimeStudio.GUI
 
             formatSpecificToolStripMenuItem.Enabled = true;
             var eiemMenu = new ToolStripMenuItem("EFF");
-            eiemMenu.DropDownItems.Add("All assets", null,
+            var assetMenu = new ToolStripMenuItem("Assets");
+            assetMenu.DropDownItems.Add("All assets...", null,
                 (_, _) => ExportAssets(ExportFilter.All, ExportType.Eiem));
-            eiemMenu.DropDownItems.Add("Selected assets", null,
+            assetMenu.DropDownItems.Add("Selected assets...", null,
                 (_, _) => ExportAssets(ExportFilter.Selected, ExportType.Eiem));
-            eiemMenu.DropDownItems.Add("Filtered assets", null,
+            assetMenu.DropDownItems.Add("Filtered assets...", null,
                 (_, _) => ExportAssets(ExportFilter.Filtered, ExportType.Eiem));
-            eiemMenu.DropDownItems.Add(new ToolStripSeparator());
-            eiemMenu.DropDownItems.Add("Checked Prefab structure...", null,
+
+            var prefabMenu = new ToolStripMenuItem("Prefabs");
+            prefabMenu.DropDownItems.Add("Checked Prefabs as structure files...", null,
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: false));
-            eiemMenu.DropDownItems.Add("Checked Prefab as EFF mod package...", null,
+            prefabMenu.DropDownItems.Add("Checked Prefabs as EFF mod packages...", null,
                 async (_, _) => await ExportCheckedEndfieldPrefabsAsync(includeResources: true));
-            eiemMenu.DropDownItems.Add("Update previously unpacked EFF resources...", null,
-                async (_, _) => await RefreshUnpackedEndfieldSourcesAsync());
-            eiemMenu.DropDownItems.Add("Checked facial animations as EFF library...", null,
+
+            var animationMenu = new ToolStripMenuItem("Animations");
+            animationMenu.DropDownItems.Add("Checked facial animations as EFF library...", null,
                 async (_, _) => await ExportCheckedEndfieldAnimationsAsync());
-            eiemMenu.DropDownItems.Add("Checked Prefabs as EFF effect sources...", null,
+
+            var effectMenu = new ToolStripMenuItem("Effects");
+            effectMenu.DropDownItems.Add("Checked Prefabs as EFF effect sources...", null,
                 async (_, _) => await ExportCheckedEndfieldEffectsAsync());
-            eiemMenu.DropDownItems.Add(new ToolStripSeparator());
-            eiemMenu.DropDownItems.Add("Set shared tool storage folder...", null, (_, _) => SetEndfieldResourceRoot());
-            eiemMenu.DropDownItems.Add("Check / download shared EFF tools...", null,
+
+            var toolsMenu = new ToolStripMenuItem("Tools");
+            toolsMenu.DropDownItems.Add("Update previously unpacked EFF resources...", null,
+                async (_, _) => await RefreshUnpackedEndfieldSourcesAsync());
+            toolsMenu.DropDownItems.Add("Set shared tool storage folder...", null, (_, _) => SetEndfieldResourceRoot());
+            toolsMenu.DropDownItems.Add("Check / download shared EFF tools...", null,
                 async (_, _) => await PrepareEndfieldSharedToolsAsync());
+
+            eiemMenu.DropDownItems.Add(prefabMenu);
+            eiemMenu.DropDownItems.Add(animationMenu);
+            eiemMenu.DropDownItems.Add(effectMenu);
+            eiemMenu.DropDownItems.Add(new ToolStripSeparator());
+            eiemMenu.DropDownItems.Add("Export selected Meshes with source Prefabs...", null,
+                async (_, _) => await ExportSelectedEndfieldMeshPackageAsync());
+            eiemMenu.DropDownItems.Add(new ToolStripSeparator());
+            eiemMenu.DropDownItems.Add(assetMenu);
+            eiemMenu.DropDownItems.Add(toolsMenu);
             formatSpecificToolStripMenuItem.DropDownItems.Add(eiemMenu);
 
             var narakaMenu = new ToolStripMenuItem("Naraka / 永劫无间");
@@ -677,6 +695,7 @@ namespace AnimeStudio.GUI
                 ResetForm();
                 endfieldVfsArchive = archive;
                 endfieldDependencyIndex = dependencyIndex;
+                endfieldAssetSourceIndex = loadedIndex.AssetSources;
                 endfieldWorkspace = workspace;
                 ActivateVirtualAssetIndex(assetIndex, mapPath);
                 Studio.Game = game;
@@ -2073,6 +2092,7 @@ namespace AnimeStudio.GUI
                         if (string.IsNullOrWhiteSpace(source) || !File.Exists(source)) source = record.Source;
                         node.Nodes.Add(new TreeNode(mesh.Name + " [Mesh]")
                         {
+                            Checked = node.Checked,
                             Tag = new VirtualAssetRecord(mesh.Name, file.Container, "Mesh", mesh.m_PathID, source, mesh.reader.byteStart)
                         });
                     }
@@ -3298,6 +3318,7 @@ namespace AnimeStudio.GUI
             endfieldVirtualPathsToolStripMenuItem.Checked = false;
             endfieldVirtualPathIndex = null;
             endfieldDependencyIndex = null;
+            endfieldAssetSourceIndex = null;
             endfieldVfsArchive = null;
             endfieldVirtualAssetListMode = false;
             indexedFileSourceMode = false;
@@ -4052,6 +4073,271 @@ namespace AnimeStudio.GUI
             StatusStripUpdate($"Finished Prefab export: {exported}/{files.Count} completed");
             if (exported > 0 && Properties.Settings.Default.openAfterExport)
                 Studio.OpenFolderInExplorer(folder.Folder);
+        }
+
+        private async Task ExportSelectedEndfieldMeshPackageAsync()
+        {
+            if (!VerifyEndfieldArchive()) return;
+            var treeSelection = EndfieldMeshTreeSelectionCollector.CollectChecked(
+                sceneTreeView.Nodes.Cast<TreeNode>());
+            VirtualAssetRecord[] selectedTargets;
+            if (treeSelection.HasCheckedAssetNodes)
+            {
+                selectedTargets = treeSelection.Meshes.ToArray();
+            }
+            else if (sceneTreeView.SelectedNode?.Tag is VirtualAssetRecord selectedTreeRecord &&
+                     selectedTreeRecord.Type.Equals("Mesh", StringComparison.OrdinalIgnoreCase))
+            {
+                selectedTargets = new[] { selectedTreeRecord };
+            }
+            else
+            {
+                selectedTargets = assetListView.SelectedIndices.Cast<int>()
+                    .Where(index => index >= 0 && index < endfieldVisibleAssetRecords.Count)
+                    .Select(index => endfieldVisibleAssetRecords[index])
+                    .ToArray();
+            }
+
+            if (selectedTargets.Length == 0)
+            {
+                var message = treeSelection.HasCheckedAssetNodes
+                    ? "The checked Scene Hierarchy items contain no Mesh records. Check a Mesh-bearing .fbx or .asset file, or select Mesh rows in the Asset List."
+                    : "Check one or more Mesh-bearing files in Scene Hierarchy, select a Mesh node, or select Mesh rows in the Asset List.";
+                MessageBox.Show(this, message, "EFF Mesh export",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var nonMeshTargets = selectedTargets.Where(target =>
+                !target.Type.Equals("Mesh", StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (nonMeshTargets.Length > 0)
+            {
+                MessageBox.Show(this, "Every selected Asset List item must be a Mesh.",
+                    "EFF Mesh export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var indexPath = EndfieldVfsAssetIndexBuilder.GetIndexPath(endfieldWorkspace);
+            var workItems = new List<(VirtualAssetRecord Target, EndfieldMeshPrefabCandidateIndex Candidates,
+                EndfieldMeshPrefabMatchResult Matches, string PrefabPath, string Error)>();
+            StatusStripUpdate($"Finding source Prefabs for {selectedTargets.Length:N0} Mesh(es)...");
+            await endfieldPreviewLock.WaitAsync();
+            try
+            {
+                workItems = await Task.Run(() =>
+                {
+                    var items = selectedTargets.Select(target =>
+                        (Target: target, Candidates: (EndfieldMeshPrefabCandidateIndex)null,
+                            Matches: (EndfieldMeshPrefabMatchResult)null, PrefabPath: (string)null,
+                            Error: (string)null)).ToList();
+                    var candidatesBySource = new Dictionary<string, EndfieldMeshPrefabCandidateIndex>(
+                        StringComparer.OrdinalIgnoreCase);
+                    var errorsBySource = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    for (var targetIndex = 0; targetIndex < selectedTargets.Length; targetIndex++)
+                    {
+                        var target = selectedTargets[targetIndex];
+                        var source = (target.Source ?? string.Empty).Replace('\\', '/');
+                        var marker = source.IndexOf("Bundles/", StringComparison.OrdinalIgnoreCase);
+                        if (marker >= 0) source = source[marker..];
+                        if (errorsBySource.TryGetValue(source, out var priorError))
+                        {
+                            items[targetIndex] = (target, null, null, null, priorError);
+                            continue;
+                        }
+
+                        if (!candidatesBySource.TryGetValue(source, out var candidates))
+                        {
+                            try
+                            {
+                                candidates = EndfieldIndexStore.LoadMeshPrefabCandidates(
+                                    endfieldAssetSourceIndex, endfieldDependencyIndex,
+                                    endfieldVfsArchive.Fingerprint, target);
+                                candidatesBySource.Add(source, candidates);
+                            }
+                            catch (Exception error)
+                            {
+                                errorsBySource[source] = error.Message;
+                                items[targetIndex] = (target, null, null, null, error.Message);
+                                Logger.Error($"EFF Mesh source lookup failed for '{target.Name}': {error}");
+                                continue;
+                            }
+                        }
+
+                        items[targetIndex] = (target, candidates, null, null, null);
+                    }
+
+                    var searchTargets = items.Where(item => item.Error == null)
+                        .Select(item => new EndfieldMeshPrefabSearchTarget(item.Target, item.Candidates))
+                        .ToArray();
+                    if (searchTargets.Length == 0) return items;
+
+                    try
+                    {
+                        var batch = EndfieldMeshPackageCommand.FindMatchingPrefabs(
+                            endfieldVfsArchive, endfieldWorkspace, searchTargets, specifyUnityVersion.Text);
+                        for (var itemIndex = 0; itemIndex < items.Count; itemIndex++)
+                        {
+                            var item = items[itemIndex];
+                            if (item.Error == null)
+                                items[itemIndex] = (item.Target, item.Candidates,
+                                    batch.Results[item.Target], item.PrefabPath, item.Error);
+                        }
+                    }
+                    catch (Exception error)
+                    {
+                        for (var itemIndex = 0; itemIndex < items.Count; itemIndex++)
+                        {
+                            var item = items[itemIndex];
+                            if (item.Error == null)
+                            {
+                                Logger.Error($"EFF Mesh Prefab matching failed for '{item.Target.Name}': {error}");
+                                items[itemIndex] = (item.Target, item.Candidates, null, null, error.Message);
+                            }
+                        }
+                    }
+                    return items;
+                });
+            }
+            finally
+            {
+                endfieldPreviewLock.Release();
+            }
+
+            var prefabSelection = new EndfieldMeshPrefabSelection();
+            for (var itemIndex = 0; itemIndex < workItems.Count; itemIndex++)
+            {
+                var item = workItems[itemIndex];
+                if (item.Error != null) continue;
+
+                var prefabPath = prefabSelection.Select(item.Matches.Prefabs,
+                    paths => ChooseEndfieldMeshSourcePrefab(paths, item.Target.Name));
+                workItems[itemIndex] = (item.Target, item.Candidates, item.Matches, prefabPath, item.Error);
+            }
+
+            var failures = new List<string>();
+            foreach (var item in workItems.Where(item => item.PrefabPath == null))
+            {
+                var error = item.Error;
+                if (error == null)
+                {
+                    error = item.Matches.Prefabs.Count > 0
+                        ? "source Prefab selection was cancelled."
+                        : item.Matches.FailedPrefabs.Count > 0
+                            ? "no matching Prefab. First candidate error: " + item.Matches.FailedPrefabs[0]
+                            : "no indexed Prefab renders this Mesh.";
+                }
+                failures.Add($"{item.Target.Name}: {error}");
+            }
+            if (failures.Count == workItems.Count)
+            {
+                MessageBox.Show(this, string.Join("\n", failures.Take(12)), "EFF Mesh export",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                StatusStripUpdate("No Mesh packages were exported.");
+                return;
+            }
+
+            var folder = new OpenFolderDialog
+            {
+                InitialFolder = saveDirectoryBackup,
+                Title = "Export selected Meshes as EFF mod packages"
+            };
+            if (folder.ShowDialog(this) != DialogResult.OK) return;
+            saveDirectoryBackup = folder.Folder;
+
+            var completed = 0;
+            var exportGroups = workItems
+                .Where(item => item.PrefabPath != null)
+                .GroupBy(item => item.PrefabPath, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var groupIndex = 0;
+            foreach (var exportGroup in exportGroups)
+            {
+                var groupItems = exportGroup.ToArray();
+                var prefab = groupItems.SelectMany(item => item.Candidates.Prefabs)
+                    .FirstOrDefault(candidate => candidate.Container.Equals(exportGroup.Key,
+                        StringComparison.OrdinalIgnoreCase));
+                if (prefab == null)
+                {
+                    failures.Add(exportGroup.Key + ": source Prefab was not present in the candidate index.");
+                    continue;
+                }
+
+                var exportTargets = groupItems.Select(item => item.Target).ToArray();
+                // Keep selected-Mesh packages distinct from full Prefab exports.
+                var relative = prefab.Container.Replace('/', Path.DirectorySeparatorChar);
+                var packageDirectory = Path.Combine(folder.Folder,
+                    Path.GetDirectoryName(relative) ?? "", prefab.Stem + ".meshes.eff");
+                await endfieldPreviewLock.WaitAsync();
+                try
+                {
+                    StatusStripUpdate($"Exporting {exportTargets.Length:N0} Mesh(es) from Prefab '{prefab.Stem}' ({++groupIndex}/{exportGroups.Length})...");
+                    var result = await Task.Run(() => EndfieldMeshPackageCommand.ExportMany(
+                        endfieldVfsArchive, endfieldWorkspace, indexPath, prefab,
+                        endfieldAssetSourceIndex, endfieldDependencyIndex,
+                        endfieldVfsArchive.Fingerprint, exportTargets, packageDirectory, specifyUnityVersion.Text));
+                    completed += result.Exported;
+                    failures.AddRange(result.Failures);
+                    if (result.Exported > 0)
+                        EndfieldSourceRefresh.Remember(endfieldWorkspace, packageDirectory);
+                }
+                catch (Exception error)
+                {
+                    Logger.Error($"EFF Mesh package export failed for Prefab '{prefab.Container}': {error}");
+                    failures.Add($"{prefab.Container}: {error.Message}");
+                }
+                finally
+                {
+                    endfieldPreviewLock.Release();
+                }
+            }
+
+            StatusStripUpdate($"Finished Mesh package export: {completed}/{selectedTargets.Length} completed");
+            if (completed > 0 && Properties.Settings.Default.openAfterExport)
+                Studio.OpenFolderInExplorer(folder.Folder);
+            if (failures.Count > 0)
+                MessageBox.Show(this, $"Exported {completed} of {selectedTargets.Length} Mesh(es).\n\n" +
+                    string.Join("\n", failures.Take(12)), "EFF Mesh export",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private string ChooseEndfieldMeshSourcePrefab(IReadOnlyList<string> prefabs, string meshName)
+        {
+            using var dialog = new Form
+            {
+                Text = "Choose source Prefab for " + meshName,
+                StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowInTaskbar = false,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                ClientSize = new Size(680, 390)
+            };
+            var list = new ListBox
+            {
+                Dock = DockStyle.Fill,
+                HorizontalScrollbar = true,
+                IntegralHeight = false
+            };
+            foreach (var prefab in prefabs) list.Items.Add(prefab);
+            if (list.Items.Count > 0) list.SelectedIndex = 0;
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 44,
+                FlowDirection = FlowDirection.RightToLeft,
+                Padding = new Padding(8)
+            };
+            var export = new System.Windows.Forms.Button
+                { Text = "Use Prefab", DialogResult = DialogResult.OK, AutoSize = true };
+            var cancel = new System.Windows.Forms.Button
+                { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
+            buttons.Controls.Add(export);
+            buttons.Controls.Add(cancel);
+            dialog.Controls.Add(list);
+            dialog.Controls.Add(buttons);
+            dialog.AcceptButton = export;
+            dialog.CancelButton = cancel;
+            return dialog.ShowDialog(this) == DialogResult.OK ? list.SelectedItem as string : null;
         }
 
         private async Task ExportNarakaPrefabsAsync(bool checkedPrefabs)

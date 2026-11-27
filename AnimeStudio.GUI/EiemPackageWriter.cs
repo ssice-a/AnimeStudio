@@ -65,19 +65,24 @@ namespace AnimeStudio.GUI
             }
         }
 
-        public bool Write(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory, Action beforeCommit = null)
+        public bool Write(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory,
+            Action beforeCommit = null, IReadOnlySet<Mesh> selectedMeshes = null)
         {
             EiemPackagePublication.Publish(outputDirectory, staging =>
             {
                 ReadPreviousResources(outputDirectory);
-                if (!WriteStaged(prefab, prefabRoot, staging))
+                if (selectedMeshes != null)
+                    CopyDirectoryIfPresent(Path.Combine(outputDirectory, "physics"),
+                        Path.Combine(staging, "physics"));
+                if (!WriteStaged(prefab, prefabRoot, staging, selectedMeshes))
                     throw new InvalidDataException("EFF source export failed; previous package retained: " + string.Join("; ", errors));
                 beforeCommit?.Invoke();
             });
             return true;
         }
 
-        private bool WriteStaged(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory)
+        private bool WriteStaged(VirtualAssetFile prefab, GameObject prefabRoot, string outputDirectory,
+            IReadOnlySet<Mesh> selectedMeshes)
         {
             if (prefab == null || prefabRoot == null || string.IsNullOrWhiteSpace(outputDirectory))
                 return false;
@@ -105,7 +110,7 @@ namespace AnimeStudio.GUI
             var manifestPath = Path.Combine(rootDirectory, "source", "manifest.json");
             if (File.Exists(manifestPath)) File.Delete(manifestPath);
             var physicsDirectory = Path.Combine(rootDirectory, "physics");
-            if (Directory.Exists(physicsDirectory))
+            if (selectedMeshes == null && Directory.Exists(physicsDirectory))
                 Directory.Delete(physicsDirectory, recursive: true);
             Directory.CreateDirectory(Path.Combine(rootDirectory, "meshes"));
             Directory.CreateDirectory(Path.Combine(rootDirectory, "skeletons"));
@@ -114,16 +119,19 @@ namespace AnimeStudio.GUI
             transformPaths = BuildTransformPaths(root);
 
             var hierarchy = EndfieldPrefabDocument.GetHierarchy(root).ToArray();
-            skeletonTransforms = BuildSkeletonTransforms(hierarchy);
+            skeletonTransforms = BuildSkeletonTransforms(hierarchy, selectedMeshes);
 
             var renderIndex = 0;
             foreach (var gameObject in hierarchy)
             {
                 foreach (var pointer in gameObject.m_Components)
                     if (pointer.Cast<AnimeStudio.Object>().TryGet(out var component) && component is Renderer renderer)
-                        WriteRenderer(gameObject, renderer, renderIndex++);
+                        WriteRenderer(gameObject, renderer, renderIndex++, selectedMeshes);
             }
 
+            if (selectedMeshes != null)
+                foreach (var mesh in selectedMeshes.Where(mesh => !renderedMeshes.Contains(mesh)))
+                    errors.Add($"The selected Mesh '{mesh.Name}' is not rendered by the source Prefab.");
             if (renderIndex == 0)
             {
                 errors.Add("The selected Prefab has no readable MeshRenderer or SkinnedMeshRenderer.");
@@ -139,7 +147,7 @@ namespace AnimeStudio.GUI
             {
                 var source = prefab.Records.Select(record => record.Source)
                     .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-                if (dependencies != null && !string.IsNullOrWhiteSpace(vfsFingerprint) &&
+                if (selectedMeshes == null && dependencies != null && !string.IsNullOrWhiteSpace(vfsFingerprint) &&
                     !string.IsNullOrWhiteSpace(source))
                 {
                     var closure = dependencies.ResolveBundleClosure(source);
@@ -187,7 +195,7 @@ namespace AnimeStudio.GUI
                 try
                 {
                     EiemSourceManifestWriter.Write(rootDirectory, prefab, root, dependencies,
-                        vfsFingerprint, sourceResources, sourceIndex, sourceArchive);
+                        vfsFingerprint, sourceResources, sourceIndex, sourceArchive, selectedMeshes != null);
                 }
                 catch (Exception ex)
                 {
@@ -198,9 +206,11 @@ namespace AnimeStudio.GUI
             return errors.Count == 0;
         }
 
-        private void WriteRenderer(GameObject gameObject, Renderer renderer, int index)
+        private void WriteRenderer(GameObject gameObject, Renderer renderer, int index, IReadOnlySet<Mesh> selectedMeshes)
         {
             var mesh = GetMesh(renderer);
+            if (selectedMeshes != null && !selectedMeshes.Contains(mesh))
+                return;
             if (mesh == null || mesh.m_VertexCount <= 0)
             {
                 errors.Add($"Unreadable mesh on renderer '{GetTransformPath(gameObject.m_Transform)}'.");
@@ -623,12 +633,14 @@ namespace AnimeStudio.GUI
             return string.Empty;
         }
 
-        private HashSet<Transform> BuildSkeletonTransforms(IEnumerable<GameObject> hierarchy)
+        private HashSet<Transform> BuildSkeletonTransforms(IEnumerable<GameObject> hierarchy, IReadOnlySet<Mesh> selectedMeshes)
         {
             var result = new HashSet<Transform>();
             foreach (var gameObject in hierarchy)
             {
                 if (gameObject.m_SkinnedMeshRenderer is not SkinnedMeshRenderer renderer)
+                    continue;
+                if (selectedMeshes != null && !selectedMeshes.Contains(GetMesh(renderer)))
                     continue;
 
                 foreach (var pointer in renderer.m_Bones ?? Enumerable.Empty<PPtr<Transform>>())
@@ -672,7 +684,18 @@ namespace AnimeStudio.GUI
                     CollectTransforms(childTransform, nodes, seen, selected);
         }
 
-        private static Mesh GetMesh(Renderer renderer)
+        internal static HashSet<Mesh> GetReferencedMeshes(GameObject prefabRoot)
+        {
+            var meshes = new HashSet<Mesh>();
+            foreach (var gameObject in EndfieldPrefabDocument.GetHierarchy(prefabRoot))
+            foreach (var componentPointer in gameObject.m_Components)
+                if (componentPointer.Cast<AnimeStudio.Object>().TryGet(out var component) &&
+                    component is Renderer renderer && GetMesh(renderer) is Mesh mesh)
+                    meshes.Add(mesh);
+            return meshes;
+        }
+
+        internal static Mesh GetMesh(Renderer renderer)
         {
             if (renderer is SkinnedMeshRenderer skinned)
                 return skinned.m_Mesh.TryGet(out var mesh) ? mesh : null;
@@ -772,6 +795,33 @@ namespace AnimeStudio.GUI
         }
 
         private static string Format(float value) => value.ToString("R", CultureInfo.InvariantCulture);
+
+        private static void CopyDirectoryIfPresent(string source, string destination)
+        {
+            if (!Directory.Exists(source))
+                return;
+
+            if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The previous physics directory cannot be a directory link: " + source);
+
+            Directory.CreateDirectory(destination);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(source))
+            {
+                if ((File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("The previous physics directory cannot contain links: " + entry);
+
+                var relativePath = Path.GetRelativePath(source, entry);
+                var destinationFile = Path.Combine(destination, relativePath);
+                if (Directory.Exists(entry))
+                {
+                    CopyDirectoryIfPresent(entry, destinationFile);
+                    continue;
+                }
+
+                Directory.CreateDirectory(Path.GetDirectoryName(destinationFile)!);
+                File.Copy(entry, destinationFile, overwrite: true);
+            }
+        }
 
         private void WriteReport()
         {

@@ -8,7 +8,8 @@ namespace AnimeStudio.GUI
 {
     internal sealed record LoadedEndfieldIndex(
         VirtualAssetPathIndex Assets, EndfieldBundleDependencyIndex Dependencies,
-        string VfsFingerprint, long StoredAssetCount, long StoredCabCount);
+        EndfieldAssetSourceIndex AssetSources, string VfsFingerprint,
+        long StoredAssetCount, long StoredCabCount);
 
     /// <summary>
     /// The small subset of the VFS index needed to export one Prefab.  Keeping
@@ -18,6 +19,10 @@ namespace AnimeStudio.GUI
     internal sealed record EndfieldPrefabExportIndex(
         VirtualAssetFile Prefab, IReadOnlyList<VirtualAssetRecord> Assets,
         EndfieldBundleDependencyIndex Dependencies, string VfsFingerprint);
+
+    internal sealed record EndfieldMeshPrefabCandidateIndex(
+        IReadOnlyList<VirtualAssetFile> Prefabs, EndfieldBundleDependencyIndex Dependencies,
+        string VfsFingerprint);
 
     internal static class EndfieldIndexStore
     {
@@ -147,12 +152,14 @@ namespace AnimeStudio.GUI
             }
 
         Finished:
+            dependencies.PrepareReverseDependencyIndex();
             assets.FinishLoading(sortRecords: false);
             if (!ended || ranges == null && stream.Position != stream.Length ||
                 storedAssetCount != readAssetCount || storedCabCount != dependencies.CabCount)
                 throw new InvalidDataException("The EFF Endfield index is incomplete or corrupt.");
             return new LoadedEndfieldIndex(
-                assets, dependencies, fingerprint, storedAssetCount, storedCabCount);
+                assets, dependencies, new EndfieldAssetSourceIndex(assets.Records),
+                fingerprint, storedAssetCount, storedCabCount);
         }
 
         public static EndfieldPrefabExportIndex LoadPrefabExportIndex(string path, string prefabContainer)
@@ -173,6 +180,83 @@ namespace AnimeStudio.GUI
             if (meshTargets == null || meshTargets.Count == 0)
                 throw new ArgumentException("At least one legacy Mesh target is required.", nameof(meshTargets));
             return LoadPrefabExportIndexes(path, null, meshTargets);
+        }
+
+        internal static EndfieldMeshPrefabCandidateIndex LoadMeshPrefabCandidates(
+            EndfieldAssetSourceIndex assetSources, EndfieldBundleDependencyIndex dependencies,
+            string fingerprint, VirtualAssetRecord meshTarget)
+        {
+            if (assetSources == null) throw new ArgumentNullException(nameof(assetSources));
+            if (dependencies == null) throw new ArgumentNullException(nameof(dependencies));
+            if (meshTarget == null || !meshTarget.Type.Equals("Mesh", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("A Mesh asset record is required.", nameof(meshTarget));
+            if (string.IsNullOrWhiteSpace(meshTarget.Source))
+                throw new InvalidDataException("The selected Mesh has no source Bundle identity.");
+
+            var meshSource = NormalizeSource(meshTarget.Source);
+            var meshFound = assetSources.ForSource(meshSource).Any(record =>
+                record.Type.Equals("Mesh", StringComparison.OrdinalIgnoreCase) &&
+                record.PathId == meshTarget.PathId &&
+                record.Name.Equals(meshTarget.Name, StringComparison.Ordinal) &&
+                NormalizeContainer(record.Container).Equals(NormalizeContainer(meshTarget.Container),
+                    StringComparison.OrdinalIgnoreCase));
+            if (!meshFound)
+                throw new FileNotFoundException("The selected Mesh is absent from the current Endfield index.");
+
+            // Candidate selection uses the prebuilt reverse CAB index. A Mesh
+            // lookup touches its direct dependents and their Prefab records,
+            // rather than scanning every Bundle or every asset record.
+            var dependentSources = dependencies.GetDirectBundleDependents(meshSource)
+                .Append(meshSource);
+            var candidateRecords = new Dictionary<string, List<VirtualAssetRecord>>(
+                StringComparer.OrdinalIgnoreCase);
+            var candidateSources = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var source in dependentSources)
+            {
+                foreach (var record in assetSources.ForSource(source))
+                {
+                    var container = NormalizeContainer(record.Container);
+                    if (!container.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!candidateSources.TryGetValue(container, out var prefabSource))
+                    {
+                        candidateSources.Add(container, source);
+                        candidateRecords.Add(container, new List<VirtualAssetRecord> { record });
+                    }
+                    else if (!prefabSource.Equals(source, StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidateSources[container] = string.Empty;
+                        candidateRecords.Remove(container);
+                    }
+                    else if (candidateRecords.TryGetValue(container, out var records))
+                    {
+                        records.Add(record);
+                    }
+                }
+            }
+
+            var unambiguousCandidates = candidateSources
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Value) && candidateRecords.ContainsKey(pair.Key))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            if (unambiguousCandidates.Count == 0)
+                throw new FileNotFoundException("No Prefab dependency closure contains the selected Mesh source Bundle.");
+
+            var candidates = unambiguousCandidates.Select(pair =>
+                new VirtualAssetFile(pair.Key, candidateRecords[pair.Key])).ToArray();
+            return new EndfieldMeshPrefabCandidateIndex(candidates, dependencies, fingerprint);
+        }
+
+        internal static EndfieldPrefabExportIndex CreatePrefabExportIndex(
+            VirtualAssetFile prefab, EndfieldAssetSourceIndex assetSources,
+            EndfieldBundleDependencyIndex dependencies, string fingerprint)
+        {
+            var source = prefab.Records.Select(record => record.Source)
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            if (string.IsNullOrWhiteSpace(source))
+                throw new InvalidDataException("The selected Prefab has no source Bundle.");
+
+            var closureSources = dependencies.ResolveBundleClosure(source);
+            var records = closureSources.SelectMany(assetSources.ForSource).ToArray();
+            return new EndfieldPrefabExportIndex(prefab, records, dependencies, fingerprint);
         }
 
         private static Dictionary<string, EndfieldPrefabExportIndex> LoadPrefabExportIndexes(
@@ -324,6 +408,13 @@ namespace AnimeStudio.GUI
         }
 
         private static string NormalizeContainer(string value) => value.Replace('\\', '/').Trim('/');
+
+        private static string NormalizeSource(string value)
+        {
+            var normalized = (value ?? string.Empty).Replace('\\', '/');
+            var marker = normalized.IndexOf("Bundles/", StringComparison.OrdinalIgnoreCase);
+            return marker >= 0 ? normalized[marker..] : normalized;
+        }
 
         private static string MeshKey(string path, string asset) => NormalizeContainer(path) + "\n" + (asset ?? string.Empty).Trim();
 

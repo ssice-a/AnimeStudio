@@ -1,3 +1,9 @@
+# AnimeStudio v1.9.8
+
+- Export selected Endfield meshes with their source prefabs from the EFF menu. Select a source prefab when a mesh has multiple matching consumers.
+- Uses the Endfield asset index to locate matching prefab candidates and preserves source information for later refreshes.
+- Groups EFF export and maintenance commands by purpose.
+
 # AnimeStudio v1.9.7
 
 - Reduces memory use while opening layered Endfield VFS files, validates metadata counts before allocation, and improves fallback to base-game payloads.

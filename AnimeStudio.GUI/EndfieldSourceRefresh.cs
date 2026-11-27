@@ -104,7 +104,7 @@ internal static class EndfieldSourceRefresh
         var packages = outputRoot == null ? Registered(workspace) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var package in Discover(outputRoot ?? Path.Combine(workspace, "assets"))) packages.Add(package);
         int updated = 0, unchanged = 0;var failures = new List<string>();var skipped = new List<string>();
-        var pending = new List<(string Package, string Prefab)>();
+        var pending = new List<(string Package, string Prefab, (string Path, string Name)[] Meshes)>();
         var currentIndex = EndfieldVfsAssetIndexBuilder.GetIndexPath(workspace);
         foreach (var package in packages.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
         {
@@ -133,7 +133,9 @@ internal static class EndfieldSourceRefresh
                     unchanged++;
                     continue;
                 }
-                pending.Add((package, prefab));
+                var meshes = root.TryGetProperty("meshSelection", out var selection) && selection.ValueKind == JsonValueKind.True
+                    ? ReadSelectedMeshes(root) : null;
+                pending.Add((package, prefab, meshes));
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -154,7 +156,26 @@ internal static class EndfieldSourceRefresh
             try
             {
                 if (packageLock != null) { packageLock.Wait(token);lockHeld = true; }
-                EndfieldPrefabPackageCommand.ExportOne(archive, workspace, item.Prefab, item.Package, unityVersion, prepared?.GetValueOrDefault(item.Prefab));
+                var prefabIndex = prepared?.GetValueOrDefault(item.Prefab);
+                if (item.Meshes == null)
+                    EndfieldPrefabPackageCommand.ExportOne(archive, workspace, item.Prefab, item.Package, unityVersion, prefabIndex);
+                else
+                {
+                    prefabIndex ??= EndfieldIndexStore.LoadPrefabExportIndex(currentIndex, item.Prefab);
+                    var candidates = prefabIndex.Assets.Where(record => record.Type == "Mesh")
+                        .ToLookup(record => (Normalize(record.Container), record.Name));
+                    var targets = item.Meshes.Select(mesh =>
+                    {
+                        var matches = candidates[(Normalize(mesh.Path), mesh.Name)].Distinct().ToArray();
+                        if (matches.Length != 1)
+                            throw new InvalidDataException("Expected one current Mesh for " + mesh.Path + " :: " + mesh.Name);
+                        return matches[0];
+                    }).ToArray();
+                    var result = EndfieldMeshPackageCommand.ExportMany(archive, workspace, currentIndex,
+                        prefabIndex, targets, item.Package, unityVersion);
+                    if (result.Exported != targets.Length)
+                        throw new InvalidDataException(string.Join("; ", result.Failures));
+                }
                 Remember(workspace, item.Package);updated++;
             }
             catch (Exception error) when (error is not OperationCanceledException)
@@ -183,5 +204,18 @@ internal static class EndfieldSourceRefresh
             return null;
         return dependencies.ResolveBundleClosure(source.GetString())
             .ToArray();
+    }
+
+    private static (string Path, string Name)[] ReadSelectedMeshes(JsonElement manifest)
+    {
+        var meshes = manifest.GetProperty("resources").EnumerateArray()
+            .Where(resource => resource.GetProperty("type").GetString() == "Mesh")
+            .Select(resource => (Path: resource.GetProperty("logicalPath").GetString(),
+                Name: resource.GetProperty("name").GetString()))
+            .Distinct().ToArray();
+        if (meshes.Length == 0 || meshes.Any(mesh =>
+            string.IsNullOrWhiteSpace(mesh.Path) || string.IsNullOrWhiteSpace(mesh.Name)))
+            throw new InvalidDataException("Selected Mesh package has no complete logical Mesh identities.");
+        return meshes;
     }
 }

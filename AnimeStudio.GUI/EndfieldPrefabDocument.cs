@@ -14,27 +14,49 @@ namespace AnimeStudio.GUI
         public static GameObject FindRoot(IEnumerable<GameObject> objects, VirtualAssetFile file,
             IReadOnlyCollection<string> preferredCabNames)
         {
+            var roots = FindRoots(objects, new[] { file }, preferredCabNames, out var ambiguous);
+            var container = NormalizeContainer(file.Container);
+            if (ambiguous.Contains(container))
+                throw new InvalidDataException($"Ambiguous GameObject entry for '{file.Container}'.");
+            return roots.TryGetValue(container, out var root) ? root : null;
+        }
+
+        public static IReadOnlyDictionary<string, GameObject> FindRoots(IEnumerable<GameObject> objects,
+            IReadOnlyCollection<VirtualAssetFile> files, IReadOnlyCollection<string> preferredCabNames,
+            out HashSet<string> ambiguousContainers)
+        {
+            var wanted = files.ToDictionary(file => NormalizeContainer(file.Container),
+                file => file, StringComparer.OrdinalIgnoreCase);
             // Preloads are dependencies; AssetInfo.asset is the container entry.
-            var files = objects.Select(x => x.assetsFile).Distinct()
+            var assetsFiles = objects.Select(x => x.assetsFile).Distinct()
                 .Where(x => preferredCabNames == null || preferredCabNames.Count == 0 ||
                     preferredCabNames.Contains(x.fileName, StringComparer.OrdinalIgnoreCase));
             var roots = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
-            foreach (var bundle in files.SelectMany(x => x.Objects).OfType<AssetBundle>())
+            ambiguousContainers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var bundle in assetsFiles.SelectMany(x => x.Objects).OfType<AssetBundle>())
             foreach (var entry in bundle.m_Container)
             {
                 var container = entry.Key;
                 if (ulong.TryParse(container, out var hash) && AssetsHelper.Paths.TryGetValue(hash, out var path))
                     container = path;
-                if (!string.Equals(container.Replace('\\', '/'), file.Container.Replace('\\', '/'),
-                        StringComparison.OrdinalIgnoreCase)) continue;
+                container = NormalizeContainer(container);
+                if (!wanted.ContainsKey(container)) continue;
                 // Embedded subassets can share the same container path.
                 if (entry.Value.asset.TryGet<GameObject>(out var root))
-                    roots.TryAdd(Identity(root), root);
+                {
+                    if (roots.TryGetValue(container, out var previous) &&
+                        !string.Equals(Identity(previous), Identity(root), StringComparison.OrdinalIgnoreCase))
+                        ambiguousContainers.Add(container);
+                    else
+                        roots.TryAdd(container, root);
+                }
             }
-            if (roots.Count > 1)
-                throw new InvalidDataException($"Ambiguous GameObject entry for '{file.Container}'.");
-            return roots.Values.SingleOrDefault();
+            foreach (var container in ambiguousContainers) roots.Remove(container);
+            return roots;
         }
+
+        private static string NormalizeContainer(string container) =>
+            (container ?? string.Empty).Replace('\\', '/').Trim('/');
 
         public static string Build(VirtualAssetFile file, GameObject root,
             IReadOnlyList<VirtualAssetRecord> records = null,

@@ -26,7 +26,7 @@ namespace AnimeStudio.GUI
         public static void Write(string package, VirtualAssetFile prefab, GameObject root,
             EndfieldBundleDependencyIndex dependencies, string vfsFingerprint,
             IReadOnlyList<AuthorResource> resources, string sourceIndex = null,
-            EndfieldVfsArchive sourceArchive = null)
+            EndfieldVfsArchive sourceArchive = null, bool meshSelection = false)
         {
             if (dependencies == null || string.IsNullOrWhiteSpace(vfsFingerprint))
                 throw new InvalidDataException("Source baseline requires the current VFS and dependency index.");
@@ -80,7 +80,11 @@ namespace AnimeStudio.GUI
                 var skinned = renderer as SkinnedMeshRenderer;
                 var filter = skinned == null ? go.m_MeshFilter : null;
                 var meshPtr = skinned?.m_Mesh ?? filter?.m_Mesh;
-                Require(meshPtr, "Renderer Mesh", allowNull: true);
+                var meshOwner = skinned?.assetsFile ?? filter?.assetsFile ?? renderer.assetsFile;
+                // Internal Unity meshes (e.g. the Plane) do not live in a VFS Bundle.
+                // Keep their serialized references in the baseline.
+                if (!IsUnityDefaultMesh(meshPtr, meshOwner))
+                    Require(meshPtr, "Renderer Mesh", allowNull: true);
                 foreach (var pointer in renderer.m_Materials ?? new List<PPtr<Material>>())
                     Require(pointer, "Renderer Material", allowNull: true);
                 foreach (var pointer in skinned?.m_Bones ?? new List<PPtr<Transform>>())
@@ -91,7 +95,7 @@ namespace AnimeStudio.GUI
                 {
                     identity = Identity(renderer), type = renderer.type.ToString(),
                     owner = Identity(go), ownerPath = paths[go.m_Transform], transform = Identity(go.m_Transform),
-                    native = NativeRange(renderer), mesh = Pointer(meshPtr, skinned?.assetsFile ?? filter?.assetsFile ?? renderer.assetsFile),
+                    native = NativeRange(renderer), mesh = Pointer(meshPtr, meshOwner),
                     meshFilter = filter == null ? null : Identity(filter),
                     materials = (renderer.m_Materials ?? new List<PPtr<Material>>())
                         .Select((p, slot) => new { slot, pointer = Pointer(p, renderer.assetsFile) }).ToArray(),
@@ -192,7 +196,7 @@ namespace AnimeStudio.GUI
             {
                 format = "EFFSOURCE", version = 1, purpose = "author-source-baseline",
                 nativePack = false, runtimeNativeMemory = false, vfsFingerprint, sourceIndex,
-                prefab = prefab.Container.Replace('\\', '/'), root = Identity(root), sourceBundle = source,
+                prefab = prefab.Container.Replace('\\', '/'), root = Identity(root), sourceBundle = source, meshSelection,
                 containerEntries = entries, closure, bundleInputs,
                 resources = resources.Select(r => new { identity = Identity(r.Asset),
                     type = r.Asset.type.ToString(), name = r.Asset.Name, logicalPath = r.LogicalPath,
@@ -248,13 +252,20 @@ namespace AnimeStudio.GUI
             if (!pointer.TryGet(out _)) throw new InvalidDataException("Unresolved " + field + " PPtr: " + pointer.m_FileID + ":" + pointer.m_PathID);
         }
 
+        private static bool IsUnityDefaultMesh(PPtr<Mesh> pointer, SerializedFile owner) =>
+            pointer != null && !pointer.IsNull && pointer.m_FileID > 0 &&
+            string.Equals(PointerCab(pointer, owner), "unity default resources", StringComparison.OrdinalIgnoreCase);
+
+        private static string PointerCab<T>(PPtr<T> pointer, SerializedFile owner) where T : AssetObject =>
+            pointer.m_FileID == 0 ? owner.fileName :
+                pointer.m_FileID > 0 && pointer.m_FileID <= owner.m_Externals.Count ?
+                    owner.m_Externals[pointer.m_FileID - 1].fileName : null;
+
         private static object Pointer<T>(PPtr<T> pointer, SerializedFile owner) where T : AssetObject
         {
             if (pointer == null) return null;
             pointer.Cast<AssetObject>().TryGet(out var target);
-            var cab = pointer.m_FileID == 0 ? owner.fileName :
-                pointer.m_FileID > 0 && pointer.m_FileID <= owner.m_Externals.Count ?
-                    owner.m_Externals[pointer.m_FileID - 1].fileName : null;
+            var cab = PointerCab(pointer, owner);
             return new { fileId = pointer.m_FileID, pathId = pointer.m_PathID, isNull = pointer.IsNull,
                 resolved = target != null, cab,
                 identity = pointer.IsNull || cab == null ? null : cab.ToLowerInvariant() + ":" + pointer.m_PathID,

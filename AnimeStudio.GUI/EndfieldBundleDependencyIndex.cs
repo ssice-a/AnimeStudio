@@ -17,6 +17,7 @@ namespace AnimeStudio.GUI
             new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, HashSet<string>> cabsBySource =
             new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, HashSet<string>> directDependentsBySource;
 
         public int CabCount => byCab.Count;
 
@@ -39,6 +40,7 @@ namespace AnimeStudio.GUI
                 return;
             }
             byCab.Add(name, new CabRecord(source, normalizedDependencies));
+            directDependentsBySource = null;
             if (!cabsBySource.TryGetValue(source, out var sourceCabs))
             {
                 sourceCabs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -123,6 +125,68 @@ namespace AnimeStudio.GUI
                 }
             }
             return result;
+        }
+
+        public IReadOnlyList<string> ResolveBundleDependents(string source)
+        {
+            source = NormalizeSource(source);
+            EnsureReverseDependencyIndex();
+
+            var result = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var queue = new Queue<string>();
+            if (seen.Add(source)) queue.Enqueue(source);
+            while (queue.Count > 0)
+            {
+                var bundle = queue.Dequeue();
+                result.Add(bundle);
+                if (!directDependentsBySource.TryGetValue(bundle, out var dependents)) continue;
+                foreach (var dependent in dependents)
+                    if (seen.Add(dependent)) queue.Enqueue(dependent);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Returns only Bundles that directly reference this Bundle. The reverse map
+        /// is prepared once when the index loads, so a Mesh lookup visits only its
+        /// dependent Bundles instead of walking the full CAB table.
+        /// </summary>
+        public IReadOnlyCollection<string> GetDirectBundleDependents(string source)
+        {
+            EnsureReverseDependencyIndex();
+            source = NormalizeSource(source);
+            return directDependentsBySource.TryGetValue(source, out var dependents)
+                ? dependents
+                : Array.Empty<string>();
+        }
+
+        internal void PrepareReverseDependencyIndex() => EnsureReverseDependencyIndex();
+
+        private void EnsureReverseDependencyIndex()
+        {
+            if (directDependentsBySource != null)
+                return;
+
+            directDependentsBySource = new Dictionary<string, HashSet<string>>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var bundle in cabsBySource)
+            foreach (var cab in bundle.Value)
+            foreach (var dependency in byCab[cab].Dependencies)
+            {
+                // Unity owns this intrinsic resource file; it is not a VFS Bundle.
+                if (string.Equals(dependency, "unity default resources", StringComparison.OrdinalIgnoreCase) ||
+                    !byCab.TryGetValue(dependency, out var owner) ||
+                    string.Equals(bundle.Key, owner.Source, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!directDependentsBySource.TryGetValue(owner.Source, out var dependents))
+                {
+                    dependents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    directDependentsBySource.Add(owner.Source, dependents);
+                }
+                dependents.Add(bundle.Key);
+            }
         }
 
         private static string NormalizeSource(string source)
